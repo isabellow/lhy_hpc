@@ -1,0 +1,125 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<WorkflowBuilder Version="2.6.1"
+                 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                 xmlns:p1="clr-namespace:Bonsai.Scripting;assembly=Bonsai.Scripting"
+                 xmlns:p2="clr-namespace:Bonsai.DAQmx;assembly=Bonsai.DAQmx"
+                 xmlns:p3="clr-namespace:Bonsai.Dsp;assembly=Bonsai.Dsp"
+                 xmlns:rx="clr-namespace:Bonsai.Reactive;assembly=Bonsai.Core"
+                 xmlns:p4="clr-namespace:Bonsai.IO;assembly=Bonsai.System"
+                 xmlns="https://bonsai-rx.org/2018/workflow">
+  <Workflow>
+    <Nodes>
+      <Expression xsi:type="ExternalizedMapping">
+        <Property Name="Value" />
+      </Expression>
+      <Expression xsi:type="NestedWorkflow">
+        <Name>BirdName</Name>
+        <Workflow>
+          <Nodes>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="StringProperty">
+                <Value>D:\VideoData\</Value>
+              </Combinator>
+            </Expression>
+            <Expression xsi:type="ExternalizedMapping">
+              <Property Name="Value" />
+            </Expression>
+            <Expression xsi:type="Add">
+              <Operand xsi:type="StringProperty">
+                <Value>TRQ65</Value>
+              </Operand>
+            </Expression>
+            <Expression xsi:type="p1:PythonTransform">
+              <p1:Script>import datetime
+
+@returns(str)
+def process(prefix):
+  currentTime=datetime.datetime.now()
+  return prefix+'/'+currentTime.strftime('%Y%m%d')+'/'</p1:Script>
+            </Expression>
+            <Expression xsi:type="WorkflowOutput" />
+          </Nodes>
+          <Edges>
+            <Edge From="0" To="2" Label="Source1" />
+            <Edge From="1" To="2" Label="Source2" />
+            <Edge From="2" To="3" Label="Source1" />
+            <Edge From="3" To="4" Label="Source1" />
+          </Edges>
+        </Workflow>
+      </Expression>
+      <Expression xsi:type="ReplaySubject">
+        <Name>ExperName</Name>
+        <BufferSize xsi:nil="true" />
+      </Expression>
+      <Expression xsi:type="Combinator">
+        <Combinator xsi:type="p2:AnalogInput">
+          <p2:SignalSource />
+          <p2:SampleRate>500</p2:SampleRate>
+          <p2:ActiveEdge>Rising</p2:ActiveEdge>
+          <p2:SampleMode>ContinuousSamples</p2:SampleMode>
+          <p2:BufferSize>1</p2:BufferSize>
+          <p2:SamplesPerRead>-1</p2:SamplesPerRead>
+          <p2:Channels>
+            <p2:AnalogInputChannelConfiguration>
+              <p2:ChannelName />
+              <p2:MinimumValue>-10</p2:MinimumValue>
+              <p2:MaximumValue>10</p2:MaximumValue>
+              <p2:PhysicalChannel>Dev1/ai0</p2:PhysicalChannel>
+              <p2:TerminalConfiguration>Differential</p2:TerminalConfiguration>
+              <p2:VoltageUnits>Volts</p2:VoltageUnits>
+            </p2:AnalogInputChannelConfiguration>
+          </p2:Channels>
+        </Combinator>
+      </Expression>
+      <Expression xsi:type="Combinator">
+        <Combinator xsi:type="p3:Average" />
+      </Expression>
+      <Expression xsi:type="MemberSelector">
+        <Selector>Val0</Selector>
+      </Expression>
+      <Expression xsi:type="Combinator">
+        <Combinator xsi:type="rx:Timestamp" />
+      </Expression>
+      <Expression xsi:type="MemberSelector">
+        <Selector>Timestamp.DateTime</Selector>
+      </Expression>
+      <Expression xsi:type="Combinator">
+        <Combinator xsi:type="rx:Zip" />
+      </Expression>
+      <Expression xsi:type="SubscribeSubject">
+        <Name>ExperName</Name>
+      </Expression>
+      <Expression xsi:type="Add">
+        <Operand xsi:type="StringProperty">
+          <Value>SYNC.csv</Value>
+        </Operand>
+      </Expression>
+      <Expression xsi:type="PropertyMapping">
+        <PropertyMappings>
+          <Property Name="FileName" />
+        </PropertyMappings>
+      </Expression>
+      <Expression xsi:type="p4:CsvWriter">
+        <p4:FileName>D:\VideoData\SLV75/20220618/SYNC.csv</p4:FileName>
+        <p4:Append>false</p4:Append>
+        <p4:Overwrite>false</p4:Overwrite>
+        <p4:Suffix>Timestamp</p4:Suffix>
+        <p4:IncludeHeader>false</p4:IncludeHeader>
+      </Expression>
+    </Nodes>
+    <Edges>
+      <Edge From="0" To="1" Label="Source1" />
+      <Edge From="1" To="2" Label="Source1" />
+      <Edge From="3" To="4" Label="Source1" />
+      <Edge From="4" To="5" Label="Source1" />
+      <Edge From="5" To="6" Label="Source1" />
+      <Edge From="5" To="8" Label="Source2" />
+      <Edge From="6" To="7" Label="Source1" />
+      <Edge From="7" To="8" Label="Source1" />
+      <Edge From="8" To="12" Label="Source2" />
+      <Edge From="9" To="10" Label="Source1" />
+      <Edge From="10" To="11" Label="Source1" />
+      <Edge From="11" To="12" Label="Source1" />
+    </Edges>
+  </Workflow>
+</WorkflowBuilder>
