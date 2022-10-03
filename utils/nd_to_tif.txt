@@ -1,0 +1,65 @@
+input = getDirectory("images"); 
+
+bird = substring(input, 5, lengthOf(input)-1); // change the second input based on the correct file location
+
+run ("Close All");
+output = input + "\\" + bird + "_split_data";
+File.makeDirectory(output);
+File.makeDirectory(output + "\\txt_files" );
+
+File.makeDirectory(output + "\\tif_files" );
+
+for (type = 0; type <= 1 ; type++){
+    // select images taken with the auto tile scanner vs. manually
+    if (type == 0){
+        file_list = getFileList(input + "\\" + bird + "_auto_tilescan"); 
+    }else {
+        file_list = getFileList(input + "\\" + bird + "_manual");  
+    }
+
+    // process each image
+    for (i=0; i<file_list.length; i++)                                                          
+    {
+        image = file_list[i];
+        if (type == 0){
+            path = input + "\\" + bird + "_auto_tilescan\\" + image;
+        }else {
+            path = input + "\\" + bird + "_manual\\" + image; 
+        }
+
+        run("Bio-Formats Macro Extensions");
+        Ext.setId(path);
+        Ext.getCurrentFile(file);
+        run("Bio-Formats Importer", "open=&path autoscale color_mode=Default view=Hyperstack stack_order=XYCZT series_");
+        run("Show Info...");
+
+        if (i < 9){
+            leading = "0";
+        }else{
+            leading = ""; 
+        }
+
+        // save meta data
+        if (type == 0){
+            saveAs("Text", output + "\\txt_files\\auto_" + leading + (i+1) + ".txt"); 
+        }else {
+            saveAs("Text", output + "\\txt_files\\manual_" + leading + (i+1) + ".txt");  
+        }
+        selectWindow("Info for " + image);
+        run("Close");
+        getDimensions(width, height, winds, slices, frames);
+        
+        //  split color channels and save images
+        run("Split Channels");     
+            for (c = 1; c <= winds; c++)
+            {
+    		    selectWindow("C" + c + "-" + image);
+                if (type == 0){
+                    saveAs("Tiff",  output + "\\tif_files\\auto_color" + c + "_" + leading + (i+1));
+                }else {
+                    saveAs("Tiff",  output + "\\tif_files\\manual_color" + c + "_" + leading + (i+1)); 
+               }
+            }
+        run ("Close All");
+    }
+}
