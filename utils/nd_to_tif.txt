@@ -17,29 +17,35 @@ for (i=0; i<file_list.length; i++)
     image = file_list[i];
     path = input + "\\" + bird + "_auto_tilescan\\" + image;
 
-    run("Bio-Formats Macro Extensions");
-    Ext.setId(path);
-    Ext.getCurrentFile(file);
-    run("Bio-Formats Importer", "open=&path autoscale color_mode=Default view=Hyperstack stack_order=XYCZT series_");
-    run("Show Info...");
-
-    if (i < 9){
-        leading = "0";
+    // check the file size and skip if too large to avoid crashing
+    file_size = File.length(path)
+    if (file_size > (1.5 * 10e9)){ //adjust tol depending on compute power
+        print(image + " failed: too large")
     }else{
-        leading = ""; 
-    }
+        run("Bio-Formats Macro Extensions");
+        Ext.setId(path);
+        Ext.getCurrentFile(file);
+        run("Bio-Formats Importer", "open=&path autoscale color_mode=Default view=Hyperstack stack_order=XYCZT series_");
+        run("Show Info...");
 
-    // save meta data
-    saveAs("Text", output + "\\txt_files\\auto_" + leading + (i+1) + ".txt"); 
-    selectWindow("Info for " + image);
-    run("Close");
-    getDimensions(width, height, winds, slices, frames);
-    
-    // split color channels and save images
-    run("Split Channels");     
-    for (c = 1; c <= winds; c++){
-		    selectWindow("C" + c + "-" + image);
-            saveAs("Tiff",  output + "\\tif_files\\auto_color" + c + "_" + leading + (i+1));
+        if (i < 9){
+            leading = "0";
+        }else{
+            leading = ""; 
         }
-    run ("Close All");
+
+        // save meta data
+        saveAs("Text", output + "\\txt_files\\auto_" + leading + (i+1) + ".txt"); 
+        selectWindow("Info for " + image);
+        run("Close");
+        getDimensions(width, height, winds, slices, frames);
+        
+        // split color channels and save images
+        run("Split Channels");     
+        for (c = 1; c <= winds; c++){
+    		    selectWindow("C" + c + "-" + image);
+                saveAs("Tiff",  output + "\\tif_files\\auto_color" + c + "_" + leading + (i+1));
+            }
+        run ("Close All");
+    }
 }
