@@ -1,5 +1,7 @@
 import numpy as np
 import scipy
+import sys
+sys.path.append("../utils/")
 
 def load_stim(data_folder, bird_id, session_id):
     '''
@@ -44,16 +46,26 @@ def load_stim(data_folder, bird_id, session_id):
     return voltage, timestamps
 
 
-def resample(voltage, timestamps, dt=0.0001):
+def bin_by_time(voltage, timestamps, dt=0.0001):
     # define the timeseries
     t_max = np.max(timestamps)
-    t = np.arange(0, t_max, dt)
+    t = np.arange(0, t_max + dt, dt)
 
-    # resample the data
-    f = scipy.interpolate.interp1d(timestamps, voltage)
-    v = f(t)
-    
-    return v, t
+    # bin by time
+    bdx = np.digitize(timestamps, t)
+    v = np.empty(t.shape[0])
+    v[:] = np.nan
+    for b in np.unique(bdx):
+        v[b] = np.mean(voltage[bdx==b])
+    v_new = nan_interp(v)
+
+    return v_new, t
 
 
-# def detect_stim(voltage, timestamps, thresh=0.1):
+# helper functions
+def nan_interp(y):
+    def find(x):
+        return x.nonzero()[0]
+    nans = np.isnan(y)
+    y[nans] = np.interp(find(nans),find(~nans),y[~nans])
+    return y
