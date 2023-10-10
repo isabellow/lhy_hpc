@@ -33,9 +33,8 @@ function [amplifier_data, h] = readIntanAmp(filepath, tduration, tstart)
 %       This reads 10 seconds of data starting from the 5th second
 %
 %   Note:
-%       This function is based on read_Intan_RHD2000_file and has been
-%       edited by Hannah Payne, Aronov lab.
-%       To convert the raw data to electrode voltage in microvolts, multiply by 0.195.
+%       This function is originally based on read_Intan_RHD2000_file.
+%       It was edited by Hannah Payne and subsequently Isabel Low, Aronov lab.
 %
 %   See also: READINTANINFO, UIGETDIR, FREAD, 
 
@@ -71,7 +70,8 @@ if exist('tduration','var') && ~isempty(tduration)
     num_samples= round(tduration*h.sample_rate);
 end
 
-% Read the data. To convert to electrode voltage in microvolts, multiply by 0.195.
+% Read the data
+% To convert to electrode voltage in microvolts, multiply by 0.195
 amplifier_data = fread(fid, [nchannels, num_samples], 'int16')*0.195;
 fclose(fid);
 
