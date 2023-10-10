@@ -19,9 +19,7 @@ def load_ma_data(path_to_data):
     Returns
     -------
     data : dict
-        dict containing behavioral and spiking data
-        data['sp'] gives dict of spiking data
-
+        dict containing cell coords and region labels
     """
     # load data
     d = loadmat_sbx(path_to_data)
