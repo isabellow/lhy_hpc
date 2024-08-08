@@ -67,14 +67,18 @@ def trim_stim_data(ephys_data, ch_names,
     ephys_data_trimmed = ephys_data[good_idx, :, start_idx:end_idx]
     return ephys_data_trimmed, ch_names_trimmed    
 
-def filter_stim_data(ephys_data, sampling_rate=30000, t_pre=0.02, stim_duration=200):
+def filter_stim_data(ephys_data, sampling_rate=30000,
+                        t_pre=0.02, stim_duration=200,
+                        filt_cut=750, filt_kind='bessel'):
     '''
     sampling_rate : int in Hz
     t_pre : float, seconds collected before stim starts
     stim_duration : int in ms
+    filt_cut : int, cut-off for the highpass filter in Hz
+    filt_kind : string, type of filter to use (butter or bessel)
     '''
     # mask the stim for filtering
-    buffer = 3 # samples
+    buffer = 6 # samples
     stim_duration_samples = np.round(stim_duration*1e-6*sampling_rate).astype(int)
     mask_duration = stim_duration_samples + buffer
     samples_pre = int(t_pre*sampling_rate)
@@ -86,14 +90,14 @@ def filter_stim_data(ephys_data, sampling_rate=30000, t_pre=0.02, stim_duration=
     n_stim = ephys_data.shape[-1]
     for i in range(n_stim):
         filt_data_pre_stim = highpass(ephys_data[:, :mask_start, i],
-                                      highcut=1000,
+                                      highcut=filt_cut,
                                       fs=sampling_rate, order=2,
-                                      axis=-1, kind='bessel'
+                                      axis=-1, kind=filt_kind
                                      )
         filt_data_post_stim = highpass(ephys_data[:, mask_end:, i],
-                                       highcut=1000,
+                                       highcut=filt_cut,
                                        fs=sampling_rate, order=2,
-                                       axis=-1, kind='bessel'
+                                       axis=-1, kind=filt_kind
                                       )
         filt_data[:, :mask_start, i] = filt_data_pre_stim
         filt_data[:, mask_start:mask_end, i] = ephys_data[:, mask_start:mask_end, i]
@@ -101,42 +105,7 @@ def filter_stim_data(ephys_data, sampling_rate=30000, t_pre=0.02, stim_duration=
 
     return filt_data
 
-def filter_stim_for_spikes(ephys_data, sampling_rate=30000, t_pre=0.02, 
-                            stim_duration=200, buffer=6):
-    """
-    Filters the stim data for comparison with average waveforms obtained by
-    getSpikeWaveform.m, masking the stim during filtering.
-    """
-    # mask the stim for filtering
-    stim_duration_samples = np.round(stim_duration*1e-6*sampling_rate).astype(int)
-    mask_duration = stim_duration_samples + buffer
-    samples_pre = int(t_pre*sampling_rate)
-    mask_start = samples_pre - buffer
-    mask_end = samples_pre + mask_duration
-
-    # highpass and lowpass filter, masking the stim
-    filt_data = np.zeros_like(ephys_data)
-    n_stim = ephys_data.shape[-1]
-    for i in range(n_stim):
-        hp_data_pre_stim = filter_for_spikes(ephys_data[:, :mask_start, i],
-                                                low_cut=10, high_cut=800,
-                                                fs=sampling_rate, order=100)
-        hplp_data_pre_stim = filter_for_spikes(hp_data_pre_stim,
-                                                low_cut=5000, high_cut=10000,
-                                                fs=sampling_rate, order=20)
-        hp_data_post_stim = filter_for_spikes(ephys_data[:, mask_end:, i],
-                                                low_cut=10, high_cut=800,
-                                                fs=sampling_rate, order=100)
-        hplp_data_post_stim = filter_for_spikes(hp_data_post_stim,
-                                                low_cut=5000, high_cut=10000,
-                                                fs=sampling_rate, order=20)
-        filt_data[:, :mask_start, i] = hplp_data_pre_stim
-        filt_data[:, mask_start:mask_end, i] = ephys_data[:, mask_start:mask_end, i]
-        filt_data[:, mask_end:, i] = hplp_data_post_stim
-
-    return filt_data
-
-def filter_stim_for_spikes_alt(ephys_data, sampling_rate=30000, t_pre=0.02,
+def filter_stim_for_spikes(ephys_data, sampling_rate=30000, t_pre=0.02,
                                 stim_duration=200, buffer=6):
     """
     Filters the stim data for comparison with average waveforms obtained by
@@ -166,9 +135,22 @@ def filter_stim_for_spikes_alt(ephys_data, sampling_rate=30000, t_pre=0.02,
     return filt_data
 
 """ Waveform data """
+def load_wf_data(session_dir, ks_dir='kilosort4'):
+    waveform_struct = load_matlab_data.loadmat_sbx(f"{session_dir}/{ks_dir}/waveformStruct.mat")
+    waveform_struct = waveform_struct['wvStruct']
+    print(waveform_struct.keys())
+
+    return waveform_struct
+
 def sort_wf_by_channel(data_dir, waveform_struct):
     '''
     Sorts the waveform data by the channel order specified in the Intan header.
+
+    Returns
+    -------
+    mean_waveforms_sorted_reordered : shape (n_cells, n_channels, n_timepoints)
+    max_site_sorted : channel with the waveform peak
+    max_idx : index for the channel with the waveform peak
     '''
     # intan header
     intan_info = load_matlab_data.loadmat_sbx(f"{data_dir}intan_info.mat")
@@ -200,6 +182,7 @@ def sort_wf_by_channel(data_dir, waveform_struct):
 
     # get the channel indices for the best channels
     ch_names = [ch_names_unsorted[i] for i in sort_idx]
+    max_idx = np.asarray([])
     for ch in max_site_sorted:
         max_idx = np.append(max_idx, ch_names.index(ch))
     max_idx = max_idx.astype(int)
@@ -237,14 +220,3 @@ def highpass(x, highcut, fs, order=5, axis=-1, kind='butter'):
     else:
         raise ValueError("Filter kind not recognized.")
     return filtfilt(b, a, x, axis=axis)
-
-def filter_for_spikes(x, low_cut, high_cut, fs, order):
-    """
-    To filter in a similar manner to how things are filtered in the
-    getSpikeWaveform.m function in spikesort-hp codebase.
-    """
-    nyq = 0.5 * fs
-    bands = np.asarray([0, low_cut, high_cut, nyq]) / (nyq*2)
-    b = remez(order+1, bands, [1, 0])
-    a = 1
-    return filtfilt(b, a, x, axis=-1)

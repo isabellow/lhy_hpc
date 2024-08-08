@@ -69,6 +69,9 @@ def plot_avg_stim(filt_data, start_t=-0.005, end_t=0.02,
     f, ax = plt.subplots(1, 1, figsize=(6, 4))
     ax.imshow(-stim_events, clim=[v_min, v_max],
               aspect='auto', cmap='viridis')
+
+    # axes and labels
+    ax.set_ylim(ax.get_ylim()[::-1])
     ax.set_xticks(np.arange(0, n_bins+1, 0.005*sampling_rate))
     ax.set_xticklabels(np.arange(start_t*1000, end_t*1000+5, 5))
     ax.set_xlabel('time (ms)')
@@ -85,6 +88,8 @@ def plot_avg_stim_by_shank(filt_data, ch_names,
     '''
     as above, but sorted by channel column and shank (if H6)
     '''
+    n_channels, n_samples, n_stim = filt_data.shape
+
     # avg across stim events
     if take_median:
         avg_stim = np.median(filt_data, axis=-1)
@@ -153,87 +158,79 @@ def plot_avg_stim_by_shank(filt_data, ch_names,
 
     return f, ax
 
-def plot_avg_stim_traces(filt_data, ch_names, ex_channels,
-                            start_t=-0.01, end_t=0.02,
-                            save_figs=False, save_folder=''):
-    for ch_idx in ex_channels:
-        # get the average response for the channel
-        ch_id = ch_names[ch_idx]
-        ch_idx = ch_names.index(ch_id)
-        ex_channel = filt_data[ch_idx].squeeze()
-        avg_response = np.mean(ex_channel, axis=1)
+def plot_avg_stim_trace(filt_data, ch_names, ch_idx,
+                        start_t=-0.01, end_t=0.02,
+                        sampling_rate=30000, t_pre=0.02,
+                        ymin=-40, ymax=40):
+    # get the average response for the channel
+    ch_id = ch_names[ch_idx]
+    ex_channel = filt_data[ch_idx].squeeze()
+    avg_response = np.median(ex_channel, axis=1)
 
-        # set the time window to look at
-        start_t = -0.01 # in seconds
-        end_t = 0.02 # in seconds
-        start_t_adj = start_t + t_pre
-        end_t_adj = end_t + t_pre
-        start_idx = np.round(start_t_adj*sampling_rate).astype(int)
-        end_idx = np.round(end_t_adj*sampling_rate).astype(int)
+    # set the time window to look at
+    start_t_adj = start_t + t_pre
+    end_t_adj = end_t + t_pre
+    start_idx = np.round(start_t_adj*sampling_rate).astype(int)
+    end_idx = np.round(end_t_adj*sampling_rate).astype(int)
 
-        # grab that window
-        avg_response_subset = avg_response[start_idx:end_idx]
-        n_bins = avg_response_subset.shape[0]
+    # grab that window
+    avg_response_subset = avg_response[start_idx:end_idx]
+    n_bins = avg_response_subset.shape[0]
 
-        # plot it
-        f, ax = plt.subplots(1, 1, figsize=(10, 7))
-        ax.plot(avg_response_subset, '-k', lw=2)
+    # plot it
+    f, ax = plt.subplots(1, 1, figsize=(10, 7))
+    ax.plot(avg_response_subset, '-k', lw=2)
 
-        # ticks and lims
-        ax.set_ylim([-20, 20])
-        ax.set_xlim([0, n_bins])
-        ax.set_xticks(np.arange(0, n_bins+1, 0.005*sampling_rate))
-        ax.set_xticklabels(np.arange(start_t*1000, end_t*1000+5, 5))
+    # ticks and lims
+    ax.set_ylim([ymin, ymax])
+    ax.set_xlim([0, n_bins])
+    ax.set_xticks(np.arange(0, n_bins+1, 0.005*sampling_rate))
+    ax.set_xticklabels(np.arange(start_t*1000, end_t*1000+5, 5))
 
-        # labels
-        ax.set_ylabel('voltage (uV)')
-        ax.set_xlabel('time from stim (ms)')
-        ax.set_title(f'avg response for channel {ch_id}')
+    # axis params
+    ax.spines['bottom'].set_bounds(0, n_bins)
+    ax.spines['left'].set_bounds(ymin, ymax)
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
 
-        plt.show()
-        if save_figs:
-            f.savefig(f'{save_folder}stim_avg_ch_{ch_id}_{stim_pol}.png', dpi=600, bbox_inches='tight')
+    # labels
+    ax.set_ylabel('voltage (uV)')
+    ax.set_xlabel('time from stim (ms)')
+    ax.set_title(f'avg response for channel {ch_id}')
 
-def plot_stim_trials(v, t, stim_idx, \
-                    sampling_rate=30000, \
-                    before_t=0.01, after_t=0.03, \
-                    v_min=0, v_max=50
-                    ):
+    return f, ax
+        
+
+def plot_stim_trials(filt_data, ch_names, ch_idx,
+                        start_t=-0.01, end_t=0.02,
+                        sampling_rate=30000, t_pre=0.02, \
+                        v_min=0, v_max=50):
     '''
-    Plot each stimulation trial as a heatmap
-
-    Params
-    ------
-    v : binned voltage
-    t : time bins (s)
-    stim_idx : which time bins correspond to a stim event
-    
-    sampling_rate : n samples per second
-    before_t, after_t : amount of time before/after the stim (s)
-    v_min, v_max : c_lim for heatmap (microvolts)
+    Plot the stimulation trials as a heatmap for a given channel
     '''
-    # define the time window
-    b_idx = np.round(before_t * sampling_rate).astype(int)
-    a_idx = np.round(after_t * sampling_rate).astype(int)
-    n_bins = b_idx + a_idx
+    # choose a channel to look at
+    ch_id = ch_names[ch_idx]
+    ex_channel = filt_data[ch_idx].squeeze()
 
-    # get the stimulation events
-    n_stim = stim_idx.shape[0]
-    stim_events = np.zeros((n_stim, n_bins))
-    for i, s_idx in enumerate(stim_idx):
-        start = s_idx - b_idx
-        end = s_idx + a_idx    
-        stim_events[i] = v[start:end]
+    # set the time window to look at
+    start_t_adj = start_t + t_pre
+    end_t_adj = end_t + t_pre
+    start_idx = np.round(start_t_adj*sampling_rate).astype(int)
+    end_idx = np.round(end_t_adj*sampling_rate).astype(int)
 
-    # plot the heatmap
-    f, ax = plt.subplots(1, 1, figsize=(5, 5))
-    ax.imshow(-stim_events, clim=[v_min, v_max], 
+    # grab that window
+    stim_events = ex_channel.T[:, start_idx:end_idx]
+    n_bins = stim_events.shape[1]
+
+    # plot for this channel
+    f, ax = plt.subplots(1, 1, figsize=(6, 4))
+    ax.imshow(-stim_events, clim=[v_min, v_max],
               aspect='auto', cmap='viridis')
-    ax.set_xticks(np.arange(0, n_bins+5, 150))
-    ax.set_xticklabels(np.arange(-before_t*1000, (after_t*1000)+5, 5)) # ms
-
-    ax.set_ylabel('stimulation trial')
+    ax.set_xticks(np.arange(0, n_bins+1, 0.005*sampling_rate))
+    ax.set_xticklabels(np.arange(start_t*1000, end_t*1000+5, 5))
     ax.set_xlabel('time (ms)')
+    ax.set_ylabel('stim events') # check dorsal vs. ventral order
+    ax.set_title(f'stim response for channel {ch_id}')
 
     return f, ax
 
