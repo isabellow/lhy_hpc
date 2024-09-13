@@ -9,10 +9,14 @@ def load_wf_data(session_dir, ks_dir='kilosort4'):
     waveform_struct = load_matlab_data.loadmat_sbx(f"{session_dir}{ks_dir}waveformStruct.mat")
     waveform_struct = waveform_struct['wvStruct']
     print(waveform_struct.keys())
-
     return waveform_struct
 
-def sort_wf_by_channel(session_dir, waveform_struct, data_dir='raw_ephys_output'):
+def load_wf_multi_session(wf_file_path):
+    waveform_struct = load_matlab_data.loadmat_sbx(wf_file_path)
+    waveform_struct = waveform_struct['wvStruct']
+    return waveform_struct
+
+def sort_wf_by_channel(session_dir, waveform_struct, data_dir='raw_ephys_output/'):
     '''
     Sorts the waveform data by the channel order specified in the Intan header.
 

@@ -2,7 +2,27 @@ import numpy as np
 from scipy.signal import find_peaks
 
 
-''' Clustering analysis based on Payne et al. 2021 '''
+''' Clustering analysis based on Payne et al. 2021 - for each cell '''
+def get_waveform_params(waveform_struct):
+    # get avg waveforms and reshape to (n_cells, n_channels, n_timpoints)
+    mean_waveforms = np.transpose(waveform_struct['waveFormsMean'], (2, 1, 0)) 
+    n_cells = mean_waveforms.shape[0]
+
+    # best channel for each waveform, pythonic indexing
+    max_site = waveform_struct['max_site'] - 1
+
+    # get the waveform properties
+    fr = waveform_struct['meanRate']
+    width = np.zeros(n_cells)
+    assym = np.zeros(n_cells)
+    for wf_idx in range(n_cells):
+        best_ch = max_site[wf_idx]
+        width[wf_idx] = calc_spike_width(mean_waveforms[wf_idx, best_ch])
+        assym[wf_idx] = calc_amp_assym(mean_waveforms[wf_idx, best_ch])
+
+    return  mean_waveforms, max_site
+
+''' Waveform parameters '''
 def calc_spike_width(wf, sampling_rate=30000):
     '''
     Calculate the time (ms) from the trough to the subsequent peak
