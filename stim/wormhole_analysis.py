@@ -7,12 +7,50 @@ from scipy.spatial import distance as dist
 
 sampling_rate = 30000
 
+def one_changepoint_vectors(X):
+    '''
+    Brute force method to find a single change point in a vector.
+    
+    Given a matrix of vectors X, finds the changepoint time (tau)
+    that maximizes the likelihood ratio (LR). The LR compares the
+    max likelihood for a model w/ a change at tau to the max likelihood
+    for a model w/ no change.
+    
+    This LR can than be compared to shuffle to determine if the change
+    is greater than expected by chance.
+    
+    Params
+    ------
+    X : single trial hash of shape (n_trials, n_channels*n_samples) where n_trials >= 2
+        
+    Returns
+    -------
+    LR : the likelihood ratio statistic
+    tau_hat : the estimated change point
+    '''
+    # data params
+    n = X.shape[0]
+    
+    # get the means
+    tau = np.arange(n-1) + 1
+    M1 = np.cumsum(X, axis=0)[:-1] / tau[:, None]
+    M2 = np.cumsum(X[::-1], axis=0)[1:] / tau[:, None]
+    
+    # Euclidean distance between mean vectors
+    D = np.sqrt(np.sum((M1 - M2[::-1])**2, axis=1))
+    
+    # LR statistic at timepoints tau
+    LR = ((D**2) * tau * (n - tau)) / n
+    tau_hat = np.argmax(LR)
+    
+    return LR[tau_hat], tau_hat 
+
 def one_change_point(x):
     '''
     Brute force method to find a single change point in a vector.
     
-    Given a vector X, finds the changepoint time (tau) that maximizes
-    the likelihood ratio (LR). The LRt compares the max likelihood
+    Given a vector x, finds the changepoint time (tau) that maximizes
+    the likelihood ratio (LR). The LR compares the max likelihood
     for a model w/ a change at tau to the max likelihood for a
     model w/ no change.
     
@@ -22,7 +60,7 @@ def one_change_point(x):
     Params
     ------
     x : correlations or distances b/w single trial hash and bulk avg
-        shape (n_trials, ) where n_trials >= 2
+        shape (n_trials,) where n_trials >= 2
         
     Returns
     -------
@@ -45,37 +83,28 @@ def one_change_point(x):
     
     return LR[tau_hat], tau_hat 
 
-
 def subsample_trials(sorted_lat, # sorted latencies to stim (nearest to furthest) for this cell
-                     n_trials=50, # number of stim trials to take
-                     max_thresh=50e-3 * sampling_rate, # furthest latency from stim
-                     collision_thresh=20e-3 * sampling_rate): # latency past which collisions are possible                
+                     n_trials=100, # number of stim trials to take
+                     min_thresh=50e-3*sampling_rate, # closest latency to stim for baseline trials
+                     collision_thresh=15e-3*sampling_rate): # latency past which collisions are possible                
     '''
     Get n_trials with spikes near to the stim, ordered from closest to furthest latency.
-    Gets a mix of possible collision trials (defined by collision_thresh) and trials with 
-    nearby spikes (defined by max_thresh) that are unlikely to be collisions.
+    Mix of possible collision trials (defined by collision_thresh) and non-collisions trials 
+    (defined by min_thresh).
     '''
-
-
-    # 50 trials with spikes near to the hash (mix of collision and non-collision)
+    # n_trials trials with spikes near to the hash (mix of collision and non-collision)
     all_stim_idx = np.arange(sorted_lat.shape[0])
-    short_idx = sorted_lat <= max_thresh
-    if np.sum(short_idx) < n_trials:
-        hash_trial_idx = np.arange(n_trials)
-    else:
-        short_idx = all_stim_idx[sorted_lat < collision_thresh]
-        med_idx = all_stim_idx[(sorted_lat >= collision_thresh) & (sorted_lat <= max_thresh)]
+    short_idx = all_stim_idx[sorted_lat <= collision_thresh]
+    n_short = short_idx.shape[0]
+    if n_short > n_trials//2:
+        short_idx = np.random.choice(all_stim_idx[sorted_lat <= collision_thresh],
+                                     size=n_trials//2, replace=False)
         n_short = short_idx.shape[0]
-        if n_short < (n_trials//2):
-            med_idx_subsamp = np.sort(np.random.choice(med_idx, size=n_trials-n_short, replace=False))
-            hash_trial_idx = np.append(short_idx, med_idx_subsamp)
-        else:
-            short_idx_subsamp = np.sort(np.random.choice(short_idx, size=n_trials//2, replace=False))
-            med_idx_subsamp = np.sort(np.random.choice(med_idx, size=n_trials//2, replace=False))
-            hash_trial_idx = np.append(short_idx_subsamp, med_idx_subsamp)
+    long_idx = np.random.choice(all_stim_idx[sorted_lat >= min_thresh], 
+                                size=n_trials-n_short, replace=False)
     
-    return hash_trial_idx
-     
+    return np.append(np.sort(short_idx), np.sort(long_idx)), n_short
+    
 def subsample_channels(best_ch, A_shank=np.arange(32),
                         B_shank=np.arange(32, 64), n_wf_ch=7):
     '''
@@ -84,6 +113,8 @@ def subsample_channels(best_ch, A_shank=np.arange(32),
     best channel and avoid going past shank ends.
 
     A_shank and B_shank define the channel indices on each shank.
+
+    TODO: refactor to use min/max instead of all these if/else statements...
     '''
     if best_ch - n_wf_ch//2 < 0: # near tip of A
         hash_ch_idx = np.arange(n_wf_ch)
