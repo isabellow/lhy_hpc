@@ -92,15 +92,19 @@ def subsample_trials(sorted_lat, # sorted latencies to stim (nearest to furthest
     Mix of possible collision trials (defined by collision_thresh) and non-collisions trials 
     (defined by min_thresh).
     '''
-    # n_trials trials with spikes near to the hash (mix of collision and non-collision)
+    # data params
     all_stim_idx = np.arange(sorted_lat.shape[0])
-    short_idx = all_stim_idx[sorted_lat <= collision_thresh]
+    all_stim_idx = all_stim_idx[np.isfinite(sorted_lat)]
+    finite_lat = sorted_lat[np.isfinite(sorted_lat)]
+
+    # n_trials trials with spikes near to the hash (mix of collision and non-collision)
+    short_idx = all_stim_idx[finite_lat <= collision_thresh]
     n_short = short_idx.shape[0]
     if n_short > n_trials//2:
-        short_idx = np.random.choice(all_stim_idx[sorted_lat <= collision_thresh],
+        short_idx = np.random.choice(all_stim_idx[finite_lat <= collision_thresh],
                                      size=n_trials//2, replace=False)
         n_short = short_idx.shape[0]
-    long_idx = np.random.choice(all_stim_idx[sorted_lat >= min_thresh], 
+    long_idx = np.random.choice(all_stim_idx[finite_lat >= min_thresh], 
                                 size=n_trials-n_short, replace=False)
     
     return np.append(np.sort(short_idx), np.sort(long_idx)), n_short
@@ -113,8 +117,6 @@ def subsample_channels(best_ch, A_shank=np.arange(32),
     best channel and avoid going past shank ends.
 
     A_shank and B_shank define the channel indices on each shank.
-
-    TODO: refactor to use min/max instead of all these if/else statements...
     '''
     if best_ch - n_wf_ch//2 < 0: # near tip of A
         hash_ch_idx = np.arange(n_wf_ch)
