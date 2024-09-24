@@ -4,10 +4,45 @@ Functions to detect antidromic responses in silicon probe data
 import numpy as np
 from scipy import stats
 from scipy.spatial import distance as dist
+import matplotlib.pyplot as plt
 
-sampling_rate = 30000
+def get_pre_stim_spikes(stim_times, spike_id, spike_t, sampling_rate=30000):
+    '''
+    Get the latency of the last spike before each stim for each cell
 
-def one_changepoint_vectors(X):
+    **Note that this function will need to be modified to account for spikes
+    between the stim and the hash if blanking procedure is refined**
+    '''
+    # data params
+    good_clusters = np.unique(spike_id)
+    n_cells = good_clusters.shape[0]
+    n_stim = stim_times.shape[0]
+
+    # remove spike times more than 1 second before first stim/after last stim
+    start_idx = stim_times[0] - sampling_rate
+    end_idx = stim_times[-1] + sampling_rate
+    spike_id = spike_id[(spike_t >= start_idx) & (spike_t <= end_idx)]
+    spike_t = spike_t[(spike_t >= start_idx) & (spike_t <= end_idx)]
+    
+    # re-align s.t. time 0 is 1 second pre first stim
+    stim_times = stim_times - start_idx
+    spike_t = spike_t - start_idx
+    
+    # get the closest spike time to each stim for every cell
+    pre_stim_spikes = np.full((n_cells, n_stim), np.Inf)
+    for i, cell_id in enumerate(good_clusters):
+        prev_stim_t = 0
+        all_sp_t = spike_t[spike_id==cell_id]
+        for j, stim_t in enumerate(stim_times):
+            if any(all_sp_t < stim_t):
+                before_spikes = all_sp_t[(all_sp_t > prev_stim_t) & (all_sp_t < stim_t)]
+                if any(before_spikes):
+                    pre_stim_spikes[i, j] = np.min(stim_t - before_spikes)
+            prev_stim_t = stim_t
+    
+    return pre_stim_spikes
+
+def one_changepoint_vectors(X, max_col_trial=-1, show_plots=False):
     '''
     Brute force method to find a single change point in a vector.
     
@@ -22,6 +57,7 @@ def one_changepoint_vectors(X):
     Params
     ------
     X : single trial hash of shape (n_trials, n_channels*n_samples) where n_trials >= 2
+    max_col_trial : max trial index for LR peak
         
     Returns
     -------
@@ -41,7 +77,26 @@ def one_changepoint_vectors(X):
     
     # LR statistic at timepoints tau
     LR = ((D**2) * tau * (n - tau)) / n
-    tau_hat = np.argmax(LR)
+    tau_hat = np.argmax(LR[:max_col_trial])
+
+    # plot the distance and LR
+    if show_plots:
+        f, ax = plt.subplots(1, 2, figsize=(7, 3))
+        ax[0].plot(D)
+        ax[0].set_ylabel('Euclidean distance')
+        ax[0].set_xlabel('trial')
+        ax[1].plot(LR)
+        ylim = ax[1].get_ylim()
+        ax[1].vlines(tau_hat, 0, ylim[1],
+                      colors='xkcd:scarlet',
+                      linestyles='dashed', lw=1,
+                      label=f'trial = {tau_hat}')
+        ax[1].set_ylabel('LR statistic')
+        ax[1].set_xlabel('change point')
+        ax[1].legend(loc='upper left',
+                        bbox_to_anchor=(1, 1))
+        plt.tight_layout()
+        plt.show()
     
     return LR[tau_hat], tau_hat 
 
@@ -85,13 +140,18 @@ def one_change_point(x):
 
 def subsample_trials(sorted_lat, # sorted latencies to stim (nearest to furthest) for this cell
                      n_trials=100, # number of stim trials to take
-                     min_thresh=50e-3*sampling_rate, # closest latency to stim for baseline trials
-                     collision_thresh=15e-3*sampling_rate): # latency past which collisions are possible                
+                     sampling_rate=30000,
+                     min_thresh=50e-3, # closest latency to stim for baseline trials (seconds)
+                     collision_thresh=15e-3): # latency past which collisions are possible (seconds)             
     '''
     Get n_trials with spikes near to the stim, ordered from closest to furthest latency.
     Mix of possible collision trials (defined by collision_thresh) and non-collisions trials 
     (defined by min_thresh).
     '''
+    # convert thresholds from seconds to samples
+    min_thresh = min_thresh*sampling_rate
+    collision_thresh = collision_thresh*sampling_rate
+
     # data params
     all_stim_idx = np.arange(sorted_lat.shape[0])
     all_stim_idx = all_stim_idx[np.isfinite(sorted_lat)]
@@ -104,8 +164,19 @@ def subsample_trials(sorted_lat, # sorted latencies to stim (nearest to furthest
         short_idx = np.random.choice(all_stim_idx[finite_lat <= collision_thresh],
                                      size=n_trials//2, replace=False)
         n_short = short_idx.shape[0]
-    long_idx = np.random.choice(all_stim_idx[finite_lat >= min_thresh], 
-                                size=n_trials-n_short, replace=False)
+    n_long = all_stim_idx[finite_lat >= min_thresh].shape[0]
+    if n_long >= n_trials-n_short:
+        long_idx = np.random.choice(all_stim_idx[finite_lat >= min_thresh], 
+                                    size=n_trials-n_short, replace=False)
+    else:
+        print('not enough long latency trials--selecting adjacent trials without spikes')
+        long_idx = np.random.choice(all_stim_idx[finite_lat >= min_thresh], 
+                                    size=n_long, replace=False)
+        extras_idx = np.setdiff1d(np.setdiff1d(long_idx+1, long_idx), short_idx)
+        extras_idx = extras_idx[extras_idx < all_stim_idx.shape[0]]
+        long_idx_extras = np.random.choice(extras_idx,
+                                            size=n_trials-n_short-n_long, replace=False)
+        long_idx = np.append(long_idx, long_idx_extras)
     
     return np.append(np.sort(short_idx), np.sort(long_idx)), n_short
     
@@ -177,4 +248,27 @@ def get_shuffle_dist(stim_hash, avg_hash, all_stim_idx,
     for s in range(num_shuff):
         shuff_LR[s] = shuffle_LR(hash_subsamp, hash_baseline,
                                     all_stim_idx)
+    return shuff_LR
+
+
+def get_shuffle_by_cell(stim_hash, mask,
+                        cell_trial_idx, n_short,
+                         A_shank, B_shank, best_ch,
+                         n_wf_ch=7, num_shuff=1000):
+    '''
+    Compute the shuffled change points for a given set of channels,
+    defined as in subsample_channels.
+    '''
+    # subsample the hash around the relevant channel
+    shuff_ch_idx = subsample_channels(best_ch, A_shank, B_shank, n_wf_ch=n_wf_ch)
+    hash_subsamp = np.abs(stim_hash[:, shuff_ch_idx] * mask[None, shuff_ch_idx])
+
+    # compute the shuffled change points
+    n_trials = cell_trial_idx.shape[0]
+    shuff_LR = np.full(num_shuff, np.NaN)
+    for s in range(num_shuff):
+        shuff_trial_idx = np.random.permutation(cell_trial_idx)
+        shuff_unwrapped = np.reshape(hash_subsamp[shuff_trial_idx], (n_trials, -1))
+        shuff_LR[s], _ = one_changepoint_vectors(shuff_unwrapped, max_col_trial=n_short)
+
     return shuff_LR

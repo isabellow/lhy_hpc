@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 
 import sys
 sys.path.append("../utils/")
@@ -62,3 +63,27 @@ def sort_wf_by_channel(session_dir, waveform_struct, data_dir='raw_ephys_output/
     max_idx = max_idx.astype(int)
 
     return mean_waveforms_sorted_reordered, max_site_sorted, max_idx
+
+def get_spike_times(session_dir, ks_dir='kilosort4', only_good=True):
+    ''' get the spike times for each (good) unit '''
+    phy_info = pd.read_csv(f"{session_dir}{ks_dir}cluster_group.tsv", sep='\t')
+    cluster_id = phy_info['cluster_id'].values
+    ks_label = phy_info['group'].values
+    spike_t_raw = np.load(f'{session_dir}{ks_dir}spike_times.npy')
+    spike_id_raw = np.load(f'{session_dir}{ks_dir}spike_clusters.npy')
+    
+    # only keep good units or include mua
+    if only_good:
+        good_idx = (ks_label == 'good').astype(bool)
+        good_clusters = cluster_id[good_idx]
+    else:
+        good_clusters = cluster_id
+    spike_good_idx = np.isin(spike_id_raw, good_clusters)
+    spike_id = spike_id_raw[spike_good_idx]
+    spike_t = spike_t_raw[spike_good_idx]
+    
+    # remove negative spike times
+    spike_id = spike_id[spike_t >= 0]
+    spike_t = spike_t[spike_t >= 0]
+    
+    return good_clusters, spike_id, spike_t
