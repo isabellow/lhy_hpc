@@ -91,6 +91,10 @@ def one_changepoint_vectors(X, max_col_trial=-1, show_plots=False):
                       colors='xkcd:scarlet',
                       linestyles='dashed', lw=1,
                       label=f'trial = {tau_hat}')
+        ax[1].vlines(max_col_trial, 0, ylim[1],
+                      colors='k',
+                      linestyles='dotted', lw=1,
+                      label=f'max col. lat.')
         ax[1].set_ylabel('LR statistic')
         ax[1].set_xlabel('change point')
         ax[1].legend(loc='upper left',
@@ -98,7 +102,7 @@ def one_changepoint_vectors(X, max_col_trial=-1, show_plots=False):
         plt.tight_layout()
         plt.show()
     
-    return LR[tau_hat], tau_hat 
+    return LR, tau_hat 
 
 def one_change_point(x):
     '''
@@ -265,10 +269,11 @@ def get_shuffle_by_cell(stim_hash, mask,
 
     # compute the shuffled change points
     n_trials = cell_trial_idx.shape[0]
-    shuff_LR = np.full(num_shuff, np.NaN)
+    shuff_LR = np.full((num_shuff, n_trials-1), np.NaN)
     for s in range(num_shuff):
         shuff_trial_idx = np.random.permutation(cell_trial_idx)
         shuff_unwrapped = np.reshape(hash_subsamp[shuff_trial_idx], (n_trials, -1))
-        shuff_LR[s], _ = one_changepoint_vectors(shuff_unwrapped, max_col_trial=n_short)
+        shuff_LR[s], _ = one_changepoint_vectors(shuff_unwrapped,
+                                                    max_col_trial=n_short)
 
     return shuff_LR
