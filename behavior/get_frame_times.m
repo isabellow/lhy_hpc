@@ -21,7 +21,7 @@ mkdir(save_dir)
 % frames to keep
 frame_rate = 50;
 start_frame_idx = 0*frame_rate + 1; % first frame to keep
-end_frame_idx = ((3*60 + 7)*60 + 0)*frame_rate + 1; % number of frames to keep
+end_frame_idx = ((3*60 + 7)*60 + 0)*frame_rate; % number of frames to keep
 
 %% load the frame times from Intan
 % Get the digital input (frame times on dig in ch1)
