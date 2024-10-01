@@ -3,4 +3,5 @@ __pycache__
 *.log
 
 data/marissa_data/
+data/antidromic_stim/
 .ipynb_checkpoints/
