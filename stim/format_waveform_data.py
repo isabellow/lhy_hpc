@@ -17,7 +17,9 @@ def load_wf_multi_session(wf_file_path):
     waveform_struct = waveform_struct['wvStruct']
     return waveform_struct
 
-def sort_wf_by_channel(session_dir, waveform_struct, data_dir='raw_ephys_output/'):
+def sort_wf_by_channel(session_dir, waveform_struct,
+                            data_dir='raw_ephys_output/',
+                            return_ch_names=False):
     '''
     Sorts the waveform data by the channel order specified in the Intan header.
 
@@ -62,7 +64,10 @@ def sort_wf_by_channel(session_dir, waveform_struct, data_dir='raw_ephys_output/
         max_idx = np.append(max_idx, ch_names.index(ch))
     max_idx = max_idx.astype(int)
 
-    return mean_waveforms_sorted_reordered, max_site_sorted, max_idx
+    if return_ch_names:
+        return mean_waveforms_sorted_reordered, max_site_sorted, max_idx, ch_names
+    else:
+        return mean_waveforms_sorted_reordered, max_site_sorted, max_idx
 
 def get_spike_times(session_dir, ks_dir='kilosort4', only_good=True):
     ''' get the spike times for each (good) unit '''

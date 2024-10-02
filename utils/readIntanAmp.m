@@ -52,6 +52,7 @@ nchannels = h.num_h.amplifier_channels;
 
 % Open the amplifier data
 amp_filepath = fullfile(filepath,'amplifier.dat');
+% amp_filepath = fullfile(filepath,'amplifier_stim_blanked.dat');
 fid = fopen(amp_filepath,'r');
 
 % Get the total number of time point samples
@@ -67,7 +68,7 @@ end
 
 % Change the duration to read if needed
 if exist('tduration','var') && ~isempty(tduration)
-    num_samples= round(tduration*h.sample_rate);
+    num_samples = round(tduration*h.sample_rate);
 end
 
 % Read the data
