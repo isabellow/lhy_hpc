@@ -1,6 +1,7 @@
 __pycache__
 *.aux
 *.log
+*.png
 
 data/marissa_data/
 data/antidromic_stim/
