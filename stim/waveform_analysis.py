@@ -200,7 +200,7 @@ def trial_trial_correlations(filt_data, templates,
     ''' 
     Sweep the templates over the filtered data on each trial to find the best correlation. 
 
-    Each waveform template has a spike time associated with the biggest peak and spans n_wf_channels.
+    Each waveform template has a channel associated with the biggest peak and spans n_wf_channels.
     Here, we search for occurances of that template across just those channels and within
     a limited time window before and after the peak time defined by t_buffer.
 
