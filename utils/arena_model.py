@@ -1,3 +1,10 @@
+'''
+This code doesn't work yet, but might be worth holding onto for the future...
+basically the Matlab reference object wasn't behaving as expected.
+'''
+
+
+
 import numpy as np
 
 import matplotlib.pyplot as plt
@@ -7,8 +14,6 @@ import matplotlib.image as mpimg
 from skimage.measure import regionprops, label
 from scipy.spatial import ConvexHull
 
-import sys
-sys.path.append("../utils/")
 import load_matlab_data
 
 def load_ref_obj(file_path):
@@ -218,14 +223,14 @@ def sort_arena_items(arena_im, arena_ref):
     return arena_items
 
 
-''' Set paths, load arena image and reference info '''
-arena_folder = '../data/arena/'
-image_file = 'arena_model-01.png'
-ref_file = 'ref_obj.mat'
-print("\nLoading arena model image...")
-arena_model = mpimg.imread(f'{arena_folder}{image_file}')
-arena_ref = load_ref_obj(f'{arena_folder}{ref_file}');
+# ''' Set paths, load arena image and reference info '''
+# arena_folder = '../data/arena/'
+# image_file = 'arena_model-01.png'
+# ref_file = 'ref_obj.mat'
+# print("\nLoading arena model image...")
+# arena_model = mpimg.imread(f'{arena_folder}{image_file}')
+# arena_ref = load_ref_obj(f'{arena_folder}{ref_file}');
 
-''' Sort arena features by type and get their location info '''
-arena_items = sort_arena_items(arena_model, arena_ref)
-np.save(f'{arena_folder}arena_items.npy', arena_items, allow_pickle=True)
+# ''' Sort arena features by type and get their location info '''
+# arena_items = sort_arena_items(arena_model, arena_ref)
+# np.save(f'{arena_folder}arena_items.npy', arena_items, allow_pickle=True)

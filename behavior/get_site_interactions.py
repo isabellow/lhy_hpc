@@ -1,7 +1,7 @@
 import numpy as np
 from matplotlib.path import Path
 from scipy.signal import medfilt
-from scipy.io import savemat
+from scipy.io import loadmat, savemat
 '''
 Used ChatGPT (checked and modified by IL) to convert and modify SC
 countHexInteractions and parts of runSiteIntGUI from RigControl/arena alignment 
@@ -18,6 +18,9 @@ pred_path = f"{session_root}{pred_file}"
 behavior_folder = f"{session_root}/behavior_data/"
 pos_file = 'posture_pos_smooth.npy'
 vel_file = 'posture_vel_smooth.npy'
+
+arena_dir = 'C:/Users/ilow1/Documents/code/il_rig_control/arena_alignment/'
+arena_items_file = 'arena_items_2.mat'
 
 ''' Helper functions '''
 def detect_stateChanges_selfmerge(state_matrix):
@@ -151,7 +154,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
         "feeder_height_thresh": 0.05,  # Threshold for beak low enough for feeder interaction
         # "feeder_radius_thresh": 1.75 / 13,  # Threshold for beak close enough to the center for feeder interaction
         "water_height_thresh": 0.06,  # Threshold for beak low enough for water interaction
-        "water_radius_thresh": 0.75 / 13,  # Threshold for beak close enough to the center for water dish interaction
+        "water_radius_thresh": 0.625 / 13,  # Threshold for beak close enough to the center for water dish interaction
         "beak_foot_dist_thresh": 0.03,  # Distance threshold to count beak and feet near enough for eating
         # "cache_radius_tol": 1.005,  # Scale factor to adjust cache site locations (>1 means further from arena center) to better match the center of beak interactions
         "state_median_win": 5,  # Median window for filtering state status to prevent transient blips
@@ -238,7 +241,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
     feet_on_perch = medfilt(feet_on_perch.astype(float), kernel_size=(state_median_win, 1)).astype(bool)
     beak_on_feet = medfilt(beak_on_feet.astype(float), kernel_size=(state_median_win, 1)).astype(bool)
     beak_on_cache = medfilt(beak_on_cache.astype(float), kernel_size=(state_median_win, 1)).astype(bool)
-    beak_on_feeder = medfilt(beak_on_feeder.astype(float), kernel_size=state_median_win, 1).astype(bool)
+    beak_on_feeder = medfilt(beak_on_feeder.astype(float), kernel_size=(state_median_win, 1)).astype(bool)
     beak_on_water = medfilt(beak_on_water.astype(float), kernel_size=state_median_win).astype(bool)
 
 
@@ -317,7 +320,10 @@ results = results_dict['results']
 body_reproj_error = results['com_rep_err'][:, 1]
 
 ''' load the arena objects '''
-# todo!
+arena_data = loadmat(f'{arena_dir}{arena_items_file}', squeeze_me=True)
+arena_data["perches"] = arena_data["perch_w_site"]
+arena_data["feeder_perches"] = arena_data["perch_no_site"]
+
 
 ''' Set the seed detection params for the matlab siteInteractionGUI '''
 # "Primal action" detection
@@ -328,10 +334,10 @@ seed_struct["countData"] = count_arena_interactions(smooth_pts,
 
 # Parameters and thresholds
 seed_struct["bk_height_seedDetect"] = 0.02  # Height threshold for site interactions
-seed_struct["smSeedWindow"] = 15  # Frame width for median-filtering seed detection
+seed_struct["smSeedWindow"] = 12  # Frame width for median-filtering seed detection
 seed_struct["gainThresh"] = 0.9  # Threshold to count as gain
 seed_struct["loseThresh"] = 0.1  # Threshold to count as loss
-seed_struct["minLoseDur"] = 15  # Losses followed by gain within this timeframe are ignored
+seed_struct["minLoseDur"] = 12  # Losses followed by gain within this timeframe are ignored
 seed_struct["validFrames"] = np.convolve(body_reproj_error, np.ones(27) / 27, mode="same") < 13 # todo check this
 seed_struct["seedIntTol"] = 0  # Tolerance for overlap of site-interaction-end and seed Loss/Gain
 seed_struct["cacheLoc"] = cache_loc_bot_distort  # Cache location - todo find this
@@ -352,4 +358,4 @@ seed_struct["smSeed"] = median_filter(seed_struct["smSeed"],
                                         size=seed_struct["smSeedWindow"])
 
 # Save as a matlab struct - todo may need to rebuild the struct in matlab
-savemat(save_path, seed_struct)
+savemat(save_path, {'seed_struct':seed_struct})
