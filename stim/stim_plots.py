@@ -68,7 +68,8 @@ def plot_avg_stim(filt_data, start_t=-0.005, end_t=0.02,
     # plot for all channels
     f, ax = plt.subplots(1, 1, figsize=(6, 4))
     ax.imshow(-stim_events, clim=[v_min, v_max],
-              aspect='auto', cmap='viridis')
+                aspect='auto', cmap='Greys',
+                interpolation='gaussian')
 
     # axes and labels
     ax.set_ylim(ax.get_ylim()[::-1])
