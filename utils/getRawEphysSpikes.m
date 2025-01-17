@@ -1,22 +1,22 @@
-%% Get unsorted ephys data
+%% Get unsorted ephys data around spike times
 % Grab a subset of data from the raw data binary file (amplifier.dat)
 
 % Set file paths
 addpath(genpath('C:\Users\ilow1\Documents\code\lhy_hpc\utils\')) % functions to read Intan files
-root_dir = 'Z:\Isabel\data\hpc_implants\ROS105\ROS105_250116\ROS105_250116_111807\';
-save_dir = fullfile(fileparts(root_dir),'raw_ephys_output'); 
-save_file_name = 'amplifier_data_by_stim_neg.npy';
-save_stimt_file = 'stim_t_neg.npy';
+root_dir = 'Z:\Isabel\data\hpc_implants\LIM63\LIM63_240610\LIM63_240610_131820\';
+save_dir = fullfile(fileparts(root_dir),'raw_ephys_spikes'); 
+save_file_name = 'amplifier_data_by_spike.npy';
 mkdir(save_dir)
 
 % Define desired time range to save
-t_start = 7263; % start t in seconds
-t_duration = 790; % duration in seconds
+t_start = 4320; % start t in seconds
+t_duration = 665; % duration in seconds
 
-% Define time window around stim events to save
-pre_stim_t = 0.02; % time before stim in seconds
-save_duration_t = 0.05; % total time in seconds around each stim
+% Define time window around spikes to save
+pre_stim_t = 1.5e-3; % time before spike in seconds
+save_duration_t = 4e-3; % total time in seconds around each spike
 
+% TODO: confirm desired window and edit script below here
 %% Save only around stim times
 % Get the digital input (stim times on dig in ch2)
 [dig_data, h] = readIntanDig(root_dir, t_duration, t_start);
@@ -67,5 +67,5 @@ stim_t = (stim_start_idx + (t_start*h.sample_rate))-1;
 
 % Save as a numpy array and struct
 writeNPY(data_by_stim, fullfile(save_dir, save_file_name));
-writeNPY(stim_t, fullfile(save_dir, save_stimt_file));
+writeNPY(stim_t, fullfile(save_dir, 'stim_t_neg150.npy'));
 save(fullfile(save_dir, 'intan_info.mat'), 'header')

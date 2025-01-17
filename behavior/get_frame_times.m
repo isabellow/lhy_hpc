@@ -1,16 +1,16 @@
 %% Get ephys + position by frame
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Set file paths
-bird_id = 'LIM63';
-session_date = '240610';
+bird_id = 'AMB154';
+session_date = '241119';
 session_root = ['Z:\Isabel\data\hpc_implants\', bird_id, '\'];
 session_dir = [bird_id, '_', session_date '\'];
-ephys_dir = 'LIM63_240610_131820\';
+ephys_dir = 'AMB154_241119_110619\';
 
 data_dir = fullfile(fileparts(session_root), [session_dir, ephys_dir]);
 
 % for saving
-save_dir = fullfile(fileparts(session_root), session_dir); 
+save_dir = fullfile(fileparts(session_root), session_dir, 'behavior_data'); 
 save_file_name = 'frame_times.npy';
 mkdir(save_dir)
 
@@ -21,7 +21,7 @@ mkdir(save_dir)
 % frames to keep
 frame_rate = 50;
 start_frame_idx = 0*frame_rate + 1; % first frame to keep
-end_frame_idx = ((3*60 + 7)*60 + 0)*frame_rate; % number of frames to keep
+end_frame_idx = ((3*60)*60 + 0)*frame_rate + 1; % number of frames to keep
 
 %% load the frame times from Intan
 % Get the digital input (frame times on dig in ch1)
