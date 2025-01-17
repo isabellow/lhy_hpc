@@ -5,12 +5,12 @@
 
 % Set file paths
 addpath(genpath('C:\Users\ilow1\Documents\code\lhy_hpc\utils\')) % functions to read Intan files
-root_dir = 'Z:\Isabel\data\hpc_implants\PRL73\PRL73_240809\PRL73_240809_114247\';
+root_dir = 'Z:\Isabel\data\hpc_implants\ROS105\ROS105_250116\ROS105_250116_111807\';
 amp_file_name = 'amplifier_stim_blanked.dat';
 
 % Define the stim period (err on a little extra time)
-t_start = 8790; % start t in seconds
-t_duration = 1000; % duration in seconds
+t_start = 7258; % start t in seconds
+t_duration = 800; % duration in seconds
 
 % Define the mask window
 buffer_samples = 12; % samples before the stim to include
