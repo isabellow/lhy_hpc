@@ -6,12 +6,15 @@ from scipy.io import loadmat, savemat
 Used ChatGPT (checked and modified by IL) to convert and modify SC
 countHexInteractions and parts of runSiteIntGUI from RigControl/arena alignment 
 '''
-
-''' Define paths to models, videos, etc. '''
-root_dir = "Z:/Isabel/data/"
+''' Set root directory '''
+# root_dir = "Z:/Isabel/data/hpc_implants/" # locker
+root_dir = "C:/Users/ilow1/Documents/code/bird_pose_tracking/model_output/" # local - update as needed
 bird_id = 'RBY94'
 session_id = '241129'
-session_root = f"{root_dir}hpc_implants/{bird_id}/{bird_id}_{session_id}/"
+session_root = f"{root_dir}{bird_id}/{bird_id}_{session_id}/"
+
+
+''' Define paths to models, smoothed keypoints, arena info '''
 pred_file = f'250109_posture_2stage_face.npy'
 pred_path = f"{session_root}{pred_file}"
 
