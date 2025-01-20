@@ -86,8 +86,8 @@ def detect_stateChanges_othermerge(state_array, other_times, dur_thresh):
     # Count state changes, including start and final
     state_vector = np.any(state_matrix, axis=1)
     state_vector_padded = np.concatenate(([False], state_vector, [False]))
-    onset_times = np.where(np.diff(state_vector_padded) > 0.5)[0]
-    offset_times = np.where(np.diff(state_vector_padded) < -0.5)[0]
+    onset_times = np.where(np.diff(state_vector_padded) > 0.5)[0] - 1
+    offset_times = np.where(np.diff(state_vector_padded) < -0.5)[0] - 1
     inter_event_dur = onset_times[1:] - offset_times[:-1]
 
     # Check the number of states and the onset/offset times
@@ -183,6 +183,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
     # beak_radius_feeder = np.sqrt(np.sum(beak_pos[:, :2]**2, axis=1)) < params["feeder_radius_thresh"]
 
     ''' Detect interactions '''
+    print('\nDetecting perch interactions...')
     # Feet on perches
     feet_on_perch = np.zeros((n_frames, n_perches + n_feeders), dtype=bool)
     
@@ -199,6 +200,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
         feet_on_perch[:, n_perches + n] = tmp & feet_still & valid_frames
 
     # Beak on feet
+    print('\nDetecting beak-feet interactions...')
     # todo: why is this not just feet_on_perch & beak_low_feet?
     beak_on_feet = np.zeros((n_frames, n_perches + n_feeders), dtype=bool)
 
@@ -215,6 +217,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
         beak_on_feet[:, n_perches + n] = tmp & beak_low_feet & feet_still & valid_frames
 
     # Beak on cache sites
+    print('\nDetecting beak-cache interactions...')
     beak_on_cache = np.zeros((n_frames, n_cache_sites), dtype=bool)
 
     for n in range(n_cache_sites):
@@ -224,6 +227,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
         beak_on_cache[:, n] = tmp & beak_low_cache & feet_still & valid_frames
 
     # Beak on feeders
+    print('\nDetecting feeder and water interactions...')
     beak_on_feeder = np.zeros((n_frames, n_feeders), dtype=bool)
 
     for n in range(n_feeders):
@@ -246,11 +250,12 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
 
 
     ''' Merge operations '''
+    print('\nMerging interactions...')
     # Define padded arrays to include start and end times
     beak_on_feet_padded = np.concatenate(([False], np.any(beak_on_feet, axis=1), [False]))
     beak_on_cache_padded = np.concatenate(([False], np.any(beak_on_cache, axis=1), [False]))
     beak_on_feeder_padded = np.concatenate(([False], np.any(beak_on_feeder, axis=1), [False]))
-    beak_on_water_padded = np.concatenate(([False], np.any(beak_on_water, axis=1), [False]))
+    beak_on_water_padded = np.concatenate(([False], beak_on_water, [False]))
 
     # Define exclusion times
     exc_eat = np.where(np.diff(beak_on_feet_padded) > 0.5)[0]
@@ -262,7 +267,6 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
     new_perch, end_perch, perch_num = detect_stateChanges_selfmerge(feet_on_perch)
 
     # Merge feeder/water interactions unless the bird does something else in between
-    # todo: make sure this makes sense given different feeder/water set-up
     tmp = np.concatenate((new_perch, exc_eat, exc_site, exc_water))
     new_feeder, end_feeder, feeder_num = detect_stateChanges_othermerge(
         beak_on_feeder, tmp, params["merge_dur_thresh"]
@@ -310,16 +314,19 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
 
 
 ''' load the smoothed keypoints and calculate the foot speed '''
+print('\nLoading smoothed postural keypoints and velocity...')
 smooth_pts = np.load(f"{behavior_folder}{pos_file}") # n_frames, n_keypoints, 3
 smooth_vel = np.load(f"{behavior_folder}{vel_file}")
-foot_speed = np.sqrt(np.sum(np.mean(smooth_vel[:, [10, 14]])))
+foot_speed = np.sqrt(np.sum(np.mean(smooth_vel[:, [10, 14]], axis=1)**2, axis=1))
 
 ''' load the model output and get the body reprojection error '''
+print('\nGetting reprojection error...')
 results_dict = np.load(pred_path, allow_pickle=True).item()
 results = results_dict['results']
 body_reproj_error = results['com_rep_err'][:, 1]
 
 ''' load the arena objects '''
+print('\nGetting arena objects...')
 arena_data = loadmat(f'{arena_dir}{arena_items_file}', squeeze_me=True)
 arena_data["perches"] = arena_data["perch_w_site"]
 arena_data["feeder_perches"] = arena_data["perch_no_site"]
@@ -327,6 +334,7 @@ arena_data["feeder_perches"] = arena_data["perch_no_site"]
 
 ''' Set the seed detection params for the matlab siteInteractionGUI '''
 # "Primal action" detection
+print('\n\nPrimal action detection')
 seed_struct["countData"] = count_arena_interactions(smooth_pts,
                                                     foot_speed,
                                                     body_reproj_error,
