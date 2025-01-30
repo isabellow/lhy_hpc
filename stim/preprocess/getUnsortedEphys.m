@@ -3,15 +3,15 @@
 
 % Set file paths
 addpath(genpath('C:\Users\ilow1\Documents\code\lhy_hpc\utils\')) % functions to read Intan files
-root_dir = 'Z:\Isabel\data\hpc_implants\ROS105\ROS105_250116\ROS105_250116_111807\';
+root_dir = 'Z:\Isabel\data\hpc_implants\ROS105\ROS105_250124\ROS105_250124_112602\';
 save_dir = fullfile(fileparts(root_dir),'raw_ephys_output'); 
 save_file_name = 'amplifier_data_by_stim_neg.npy';
 save_stimt_file = 'stim_t_neg.npy';
 mkdir(save_dir)
 
 % Define desired time range to save
-t_start = 7263; % start t in seconds
-t_duration = 790; % duration in seconds
+t_start = 7596; % start t in seconds
+t_duration = 665; % duration in seconds
 
 % Define time window around stim events to save
 pre_stim_t = 0.02; % time before stim in seconds

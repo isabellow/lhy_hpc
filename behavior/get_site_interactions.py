@@ -7,8 +7,8 @@ Used ChatGPT (checked and modified by IL) to convert and modify SC
 countHexInteractions and parts of runSiteIntGUI from RigControl/arena alignment 
 '''
 ''' Set root directory '''
-# root_dir = "Z:/Isabel/data/hpc_implants/" # locker
-root_dir = "C:/Users/ilow1/Documents/code/bird_pose_tracking/model_output/" # local - update as needed
+root_dir = "Z:/Isabel/data/hpc_implants/" # locker
+# root_dir = "C:/Users/ilow1/Documents/code/bird_pose_tracking/model_output/" # local - update as needed
 bird_id = 'RBY94'
 session_id = '241129'
 session_root = f"{root_dir}{bird_id}/{bird_id}_{session_id}/"
@@ -25,6 +25,11 @@ vel_file = 'posture_vel_smooth.npy'
 arena_dir = 'C:/Users/ilow1/Documents/code/il_rig_control/arena_alignment/'
 arena_items_file = 'arena_items_2.mat'
 
+''' Define mat file to save params and data '''
+save_file = "seed_struct.mat"
+save_path = f"{behavior_folder}{save_file}"
+
+
 ''' Helper functions '''
 def detect_stateChanges_selfmerge(state_matrix):
     '''
@@ -33,7 +38,7 @@ def detect_stateChanges_selfmerge(state_matrix):
 
     Params
     ------
-    state_array : bool, shape (n_frames, n_arena_objects)
+    state_matrix : bool, shape (n_frames, n_arena_objects)
 
     Returns
     -------
@@ -44,35 +49,46 @@ def detect_stateChanges_selfmerge(state_matrix):
     obj_num : ndarray, shape (n_states, )
         arena object index
     '''
+    # Check state matrix shape
+    if len(state_matrix.shape) == 1:
+        state_matrix = state_matrix[:, None]
+    assert len(state_matrix.shape) == 2, "State matrix must be at most 2D"
+
+
     # Count state changes, including start and final
     state_vector = np.any(state_matrix, axis=1)
-    state_vector_padded = np.concatenate(([False], state_vector, [False]))
+    state_vector_padded = np.concatenate(([False], state_vector, [False])).astype(int)
     onset_times = np.where(np.diff(state_vector_padded) > 0.5)[0]
     offset_times = np.where(np.diff(state_vector_padded) < -0.5)[0]
-
+    if offset_times[-1] == state_matrix.shape[0]:
+        offset_times[-1] = offset_times[-1] - 1
+        if offset_times[-1] == onset_times[-1]:
+            onset_times[-1] = onset_times[-1] - 1
+    
     # Check the number of states and the onset/offset times
-    obj_num, _ = np.where(state_matrix[onset_times, :].T)
-    assert len(obj_num) == len(onset_times), "Every onset time must correspond to an object"
+    assert np.all(np.count_nonzero(state_matrix, axis=1) <= 1), "State includes more than one object at once!"
+    obj_num = np.argmax(state_matrix[onset_times], axis=1)
+    assert len(obj_num) == len(onset_times), "Each state must correspond to an object"
     assert np.all(offset_times - onset_times > 0.5), "Offset times precede onset times!"
-
+    
     # Merge states that do not transition between different objects
     same_obj = np.where(np.diff(obj_num) == 0)[0]
-    onset_times[same_obj + 1] = np.delete(onset_times, same_obj + 1) # Remove the next entry (no state transition)
+    onset_times = np.delete(onset_times, same_obj + 1) # Remove the next entry (no state transition)
     offset_times = np.delete(offset_times, same_obj)  # Remove this exit (no state transition)
-
+    
     # Check the number of states
-    obj_num, _ = np.where(state_matrix[onset_times, :].T)
-    assert len(obj_num) == len(onset_times), "Every onset time must correspond to an object"
+    obj_num = np.argmax(state_matrix[onset_times], axis=1)
+    assert len(obj_num) == len(onset_times), "Each state must correspond to an object"
 
     return onset_times, offset_times, obj_num
 
-def detect_stateChanges_othermerge(state_array, other_times, dur_thresh):
+def detect_stateChanges_othermerge(state_matrix, other_times, dur_thresh):
     '''
     Determines the start and end time for each state change.
 
     Params
     ------
-    state_array : bool, shape (n_frames, n_arena_objects)
+    state_matrix : bool, shape (n_frames, n_arena_objects)
     other_times
     dur_thresh : float
         minimum number of frames for events to be considered separate
@@ -86,16 +102,25 @@ def detect_stateChanges_othermerge(state_array, other_times, dur_thresh):
     obj_num : ndarray, shape (n_states, )
         state index number
     '''
+    # Check state matrix shape
+    if len(state_matrix.shape) == 1:
+        state_matrix = state_matrix[:, None]
+    assert len(state_matrix.shape) == 2, "State matrix must be at most 2D"
+
     # Count state changes, including start and final
     state_vector = np.any(state_matrix, axis=1)
-    state_vector_padded = np.concatenate(([False], state_vector, [False]))
-    onset_times = np.where(np.diff(state_vector_padded) > 0.5)[0] - 1
-    offset_times = np.where(np.diff(state_vector_padded) < -0.5)[0] - 1
+    state_vector_padded = np.concatenate(([False], state_vector, [False])).astype(int)
+    onset_times = np.where(np.diff(state_vector_padded) > 0.5)[0]
+    offset_times = np.where(np.diff(state_vector_padded) < -0.5)[0]
+    if offset_times[-1] == state_matrix.shape[0]:
+        offset_times[-1] = offset_times[-1] - 1
+        if offset_times[-1] == onset_times[-1]:
+            onset_times[-1] = onset_times[-1] - 1
     inter_event_dur = onset_times[1:] - offset_times[:-1]
 
     # Check the number of states and the onset/offset times
-    obj_num, _ = np.where(state_matrix[onset_times, :].T)
-    assert len(obj_num) == len(onset_times), "Each onset must have a corresponding entry"
+    obj_num = np.argmax(state_matrix[onset_times], axis=1)
+    assert len(obj_num) == len(onset_times), "Each state must correspond to an object"
     assert np.all(offset_times - onset_times > 0.5), "Offset times precede onset times!"
 
     # Look for transitions between objects
@@ -117,8 +142,8 @@ def detect_stateChanges_othermerge(state_array, other_times, dur_thresh):
     offset_times = np.delete(offset_times, merge_interactions)  # Remove this exit (no state transition)
     
     # Check the number of states
-    obj_num, _ = np.where(state_matrix[onset_times, :].T)
-    assert len(obj_num) == len(onset_times), "Each onset must have a corresponding entry"
+    obj_num = np.argmax(state_matrix[onset_times], axis=1)
+    assert len(obj_num) == len(onset_times), "Each state must correspond to an object"
 
     return onset_times, offset_times, obj_num
 
@@ -338,6 +363,7 @@ arena_data["feeder_perches"] = arena_data["perch_no_site"]
 ''' Set the seed detection params for the matlab siteInteractionGUI '''
 # "Primal action" detection
 print('\n\nPrimal action detection')
+seed_struct = {}
 seed_struct["countData"] = count_arena_interactions(smooth_pts,
                                                     foot_speed,
                                                     body_reproj_error,
@@ -345,28 +371,33 @@ seed_struct["countData"] = count_arena_interactions(smooth_pts,
 
 # Parameters and thresholds
 seed_struct["bk_height_seedDetect"] = 0.02  # Height threshold for site interactions
-seed_struct["smSeedWindow"] = 12  # Frame width for median-filtering seed detection
+seed_struct["smSeedWindow"] = 11  # Frame width for median-filtering seed detection
 seed_struct["gainThresh"] = 0.9  # Threshold to count as gain
 seed_struct["loseThresh"] = 0.1  # Threshold to count as loss
 seed_struct["minLoseDur"] = 12  # Losses followed by gain within this timeframe are ignored
 seed_struct["validFrames"] = np.convolve(body_reproj_error, np.ones(27) / 27, mode="same") < 13 # todo check this
 seed_struct["seedIntTol"] = 0  # Tolerance for overlap of site-interaction-end and seed Loss/Gain
-seed_struct["cacheLoc"] = cache_loc_bot_distort  # Cache location - todo find this
 seed_struct["path"] = session_root  # Session path
+
+# Cache location - from the cacheLoc_botCam.mat file
+# saves when SaveCentroids is pressed on the bottom cam GUI
+# should load in the matlab script and also probably should realign to be more precise...
+# seed_struct["cacheLoc"] = cache_loc_bot_distort  
+
 
 # Average top and bottom beak positions
 beak_pos = np.mean(smooth_pts[:, [0, 1]], axis=1)
 seed_struct["beakPos"] = beak_pos
 
 # Model predictions for seed/no seed
-seed_struct["smSeed"] = results["face_preds"].copy()  
+sm_seed = results["face_preds"].copy()
+seed_struct["smSeed"] = np.squeeze(sm_seed)
 
 # Discard predictions during site interactions
 seed_struct["smSeed"][beak_pos[:, 2] < seed_struct["bk_height_seedDetect"]] = np.nan
 
 # Median filter the seed predictions
-seed_struct["smSeed"] = median_filter(seed_struct["smSeed"],
-                                        size=seed_struct["smSeedWindow"])
+seed_struct["smSeed"] = medfilt(seed_struct["smSeed"], kernel_size=seed_struct["smSeedWindow"])
 
 # Save as a matlab struct - todo may need to rebuild the struct in matlab
-savemat(save_path, {'seed_struct':seed_struct})
+savemat(save_path, {'seedStruct':seed_struct})
