@@ -63,11 +63,14 @@ end
 seedStruct.cacheLoc = cacheLocBot_distort;
 
 %% Run the GUI
+% view on the L is the pre and post image of the current site
+% graph on the R is the seed count 
+% most useful workflow is to go to the first flag (using Flag # and the scroll wheel...don't remember the hot key for jump to first)
+% then, toggle to Site # to see all the interactions for that site.
+% The hot key short-cut for this is "n"
 seedApp = siteInteractionGUI(seedStruct, botVid, cacheNet, topVid);
 
-% TODO cacheNet expects images of size 51x51, but mine should be ~half that
-% size. Either upsample images using impyramid(img, 'expand') and/or
-% zero-pad (impyramid will be 50x50, so still will need to zero-pad).
+% TODO how to run the GUI from the saved file?
 
 % add to GUI a plot of the 'smoothSeed' trace aligned to site interaction,
 % with onset/offset of interaction and any gain/loss marked
@@ -75,7 +78,7 @@ seedApp = siteInteractionGUI(seedStruct, botVid, cacheNet, topVid);
 
 %% Possibly these things can be moved elsewhere?
 load('annotatedSeeds.mat')
-makeEthogramPlot(annotatedSeeds,smPtsVel, [10,20;55,60;105,110], 1e3);
+makeEthogramPlot(annotatedSeeds,smPtsVel, [10,22;54,64;124,130], 1e3);
 
 %% use GUI results to update seed event tracking
 % get gain times and retrieval site interactions
