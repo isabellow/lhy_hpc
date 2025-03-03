@@ -9,13 +9,13 @@ countHexInteractions and parts of runSiteIntGUI from RigControl/arena alignment
 ''' Set root directory '''
 root_dir = "Z:/Isabel/data/hpc_implants/" # locker
 # root_dir = "C:/Users/ilow1/Documents/code/bird_pose_tracking/model_output/" # local - update as needed
-bird_id = 'RBY94'
-session_id = '241129'
+bird_id = 'AMB154'
+session_id = '241119'
 session_root = f"{root_dir}{bird_id}/{bird_id}_{session_id}/"
 
 
 ''' Define paths to models, smoothed keypoints, arena info '''
-pred_file = f'250109_posture_2stage_face.npy'
+pred_file = f'250219_posture_2stage_face.npy'
 pred_path = f"{session_root}{pred_file}"
 
 behavior_folder = f"{session_root}/behavior_data/"
@@ -399,5 +399,5 @@ seed_struct["smSeed"][beak_pos[:, 2] < seed_struct["bk_height_seedDetect"]] = np
 # Median filter the seed predictions
 seed_struct["smSeed"] = medfilt(seed_struct["smSeed"], kernel_size=seed_struct["smSeedWindow"])
 
-# Save as a matlab struct - todo may need to rebuild the struct in matlab
+# Save as a matlab struct
 savemat(save_path, {'seedStruct':seed_struct})
