@@ -22,7 +22,7 @@ mkdir(save_dir)
 % frames to keep
 frame_rate = 50;
 start_frame_idx = 0*frame_rate + 1; % first frame to keep
-end_frame_idx = ((3*60 + 13)*60 + 57)*frame_rate + 1; % number of frames to keep
+end_frame_idx = 581800; % number of frames to keep
 
 %% load the frame times from Intan
 % Get the digital input (frame times on dig in ch1)
@@ -52,4 +52,5 @@ framet = frame_starts / h.sample_rate;
 
 %% save to a numpy array
 writeNPY(framet, fullfile(save_dir, save_file_name));
+
 
