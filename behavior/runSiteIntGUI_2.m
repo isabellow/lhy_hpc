@@ -1,19 +1,26 @@
 %% Load the arena interactions and other components needed to run the site interaction GUI
+clear all
+close all
 
 %% Set paths and load files
 % functions to run site interaction GUI
 addpath(genpath('C:\Users\ilow1\Documents\code\lhy_hpc\behavior\')) % GUI functions
 
 % root session directory
-sessionPath = 'Z:\Isabel\data\hpc_implants\RBY94\RBY94_241129\';
+% sessionPath = 'Z:\Isabel\data\hpc_implants\SLV132\SLV132_250303\';
+sessionPath = 'Z:\Isabel\data\hpc_implants\AMB154\AMB154_241119\';
 cd(sessionPath),
 
 % cache locations and videos
 load('cacheLoc_botCam.mat'),
 botVid = fullfile(sessionPath,'bottom_cam.avi'); %VideoReader('botCam.avi');
 topVid = fullfile(sessionPath,'blue_cam.avi'); %VideoReader('lFront.avi');
-% botVid = VideoReaderFFMPEG('botCam.avi','FFMPEGPATH','C:\Program Files\ffmpeg-7.0-full_build\bin');
-% topVid = VideoReaderFFMPEG('rFront.avi','FFMPEGPATH','C:\Program Files\ffmpeg-7.0-full_build\bin');
+
+% ffmpegWrapper = 'C:\Users\ilow1\Documents\code\VideoReaderFFMPEG';
+% addpath(genpath(ffmpegWrapper))
+% ffmpegPath = 'C:\ffmpeg\bin';
+% botVid = VideoReaderFFMPEG('bottom_cam.avi','FFMPEGPATH',ffmpegPath);
+% topVid = VideoReaderFFMPEG('blue_cam.avi','FFMPEGPATH',ffmpegPath);
 
 % Define the cacheNet - todo...trying with SC net for now...
 cacheNet_root = 'C:\Users\ilow1\Documents\code\bird_pose_tracking\cacheNet\';

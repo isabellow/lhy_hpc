@@ -178,9 +178,18 @@ def subsample_trials(sorted_lat, # sorted latencies to stim (nearest to furthest
                                     size=n_long, replace=False)
         extras_idx = np.setdiff1d(np.setdiff1d(long_idx+1, long_idx), short_idx)
         extras_idx = extras_idx[extras_idx < all_stim_idx.shape[0]]
-        long_idx_extras = np.random.choice(extras_idx,
-                                            size=n_trials-n_short-n_long, replace=False)
-        long_idx = np.append(long_idx, long_idx_extras)
+        if extras_idx.shape[0] < n_trials-n_short-n_long:
+            extras_idx_1 = np.setdiff1d(np.setdiff1d(long_idx+1, long_idx), short_idx)
+            extras_idx_2 = np.setdiff1d(np.setdiff1d(long_idx+2, long_idx), short_idx)
+            extras_idx_1 = extras_idx_1[extras_idx_1 < all_stim_idx.shape[0]]
+            extras_idx_2 = extras_idx_2[extras_idx_2 < all_stim_idx.shape[0]]
+            extras_idx = np.append(extras_idx_1, extras_idx_2)
+        if extras_idx.shape[0] < n_trials-n_short-n_long:
+            print('not enough long latency or spike-free trials')
+        else:
+            long_idx_extras = np.random.choice(extras_idx,
+                                                    size=n_trials-n_short-n_long, replace=False)
+            long_idx = np.append(long_idx, long_idx_extras)
     
     return np.append(np.sort(short_idx), np.sort(long_idx)), n_short
     
@@ -230,7 +239,7 @@ def shuffle_LR(hash_subsamp, hash_baseline, all_stim_idx, n_trials=50):
     hash_dist = np.asarray(hash_dist)
 
     # get the change point
-    shuff_LR, _ = one_change_point(hash_dist)
+    shuff_LR, _ = one_changepoint(hash_dist)
     
     return shuff_LR
 
@@ -273,7 +282,7 @@ def get_shuffle_by_cell(stim_hash, mask,
     for s in range(num_shuff):
         shuff_trial_idx = np.random.permutation(cell_trial_idx)
         shuff_unwrapped = np.reshape(hash_subsamp[shuff_trial_idx], (n_trials, -1))
-        shuff_LR[s], _ = one_changepoint_vectors(shuff_unwrapped,
-                                                    max_col_trial=n_short)
+        shuff_LR[s], change_idx = one_changepoint_vectors(shuff_unwrapped,
+                                                            max_col_trial=n_short)
 
     return shuff_LR

@@ -1,11 +1,12 @@
 %% Get ephys + position by frame
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Set file paths
-bird_id = 'AMB154';
-session_date = '241119';
+addpath(genpath('C:\Users\ilow1\Documents\code\lhy_hpc\utils\')) % functions to read Intan files
+bird_id = 'RBY94';
+session_date = '241129';
 session_root = ['Z:\Isabel\data\hpc_implants\', bird_id, '\'];
 session_dir = [bird_id, '_', session_date '\'];
-ephys_dir = 'AMB154_241119_110619\';
+ephys_dir = 'RBY94_241129_112536\';
 
 data_dir = fullfile(fileparts(session_root), [session_dir, ephys_dir]);
 
@@ -21,7 +22,7 @@ mkdir(save_dir)
 % frames to keep
 frame_rate = 50;
 start_frame_idx = 0*frame_rate + 1; % first frame to keep
-end_frame_idx = ((3*60)*60 + 0)*frame_rate + 1; % number of frames to keep
+end_frame_idx = 581800; % number of frames to keep
 
 %% load the frame times from Intan
 % Get the digital input (frame times on dig in ch1)
@@ -51,4 +52,5 @@ framet = frame_starts / h.sample_rate;
 
 %% save to a numpy array
 writeNPY(framet, fullfile(save_dir, save_file_name));
+
 
