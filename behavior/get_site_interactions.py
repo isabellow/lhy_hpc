@@ -9,13 +9,13 @@ countHexInteractions and parts of runSiteIntGUI from RigControl/arena alignment
 ''' Set root directory '''
 root_dir = "Z:/Isabel/data/hpc_implants/" # locker
 # root_dir = "C:/Users/ilow1/Documents/code/bird_pose_tracking/model_output/" # local - update as needed
-bird_id = 'RBY94'
-session_id = '241129'
+bird_id = 'SLV132'
+session_id = '250303'
 session_root = f"{root_dir}{bird_id}/{bird_id}_{session_id}/"
 
 
 ''' Define paths to models, smoothed keypoints, arena info '''
-pred_file = f'250109_posture_2stage_face.npy'
+pred_file = f'250307_posture_2stage_face.npy'
 pred_path = f"{session_root}{pred_file}"
 
 behavior_folder = f"{session_root}/behavior_data/"
@@ -200,7 +200,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
     n_perches = len(arena_data["perches"])  # Number of perches
     n_feeders = len(arena_data["feeder_perches"])  # Number of feeder perches
 
-    ''' Utility indicators '''
+    ''' Filter variables '''
     valid_frames = body_reproj_error < params["reproj_thresh"]
     feet_still = foot_speed < params["speed_thresh"]
     beak_low_cache = beak_pos[:, 2] < params["cache_height_thresh"]
@@ -379,12 +379,6 @@ seed_struct["validFrames"] = np.convolve(body_reproj_error, np.ones(27) / 27, mo
 seed_struct["seedIntTol"] = 0  # Tolerance for overlap of site-interaction-end and seed Loss/Gain
 seed_struct["path"] = session_root  # Session path
 
-# Cache location - from the cacheLoc_botCam.mat file
-# saves when SaveCentroids is pressed on the bottom cam GUI
-# should load in the matlab script and also probably should realign to be more precise...
-# seed_struct["cacheLoc"] = cache_loc_bot_distort  
-
-
 # Average top and bottom beak positions
 beak_pos = np.mean(smooth_pts[:, [0, 1]], axis=1)
 seed_struct["beakPos"] = beak_pos
@@ -399,5 +393,5 @@ seed_struct["smSeed"][beak_pos[:, 2] < seed_struct["bk_height_seedDetect"]] = np
 # Median filter the seed predictions
 seed_struct["smSeed"] = medfilt(seed_struct["smSeed"], kernel_size=seed_struct["smSeedWindow"])
 
-# Save as a matlab struct - todo may need to rebuild the struct in matlab
+# Save as a matlab struct
 savemat(save_path, {'seedStruct':seed_struct})
