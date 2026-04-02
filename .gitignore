@@ -5,4 +5,5 @@ __pycache__
 
 data/marissa_data/
 data/antidromic_stim/
+data/wormhole_shuffles/
 .ipynb_checkpoints/

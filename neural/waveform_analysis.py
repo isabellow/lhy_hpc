@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.signal import find_peaks
 from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
 from scipy import stats
 
 
@@ -24,6 +25,38 @@ def get_waveform_params(waveform_struct):
 
     return  mean_waveforms, max_site
 
+def clu_waveforms_gmm(width, asymm, log_fr, prob_thresh=0.5):
+    '''
+    use a Gaussian mixture model to identify putative
+    inhibitory vs. excitatory neurons based on waveform properties
+
+    prob_thresh : float
+        probability cut-off for including a cell in each cluster
+    '''
+    # consolidate the params for clustering
+    wf_params = np.column_stack([asymm, width])
+    wf_params = np.column_stack([wf_params, log_fr])
+
+    # fit a Gaussian mixture model
+    wf_model = GaussianMixture(n_components=2)
+    wf_model.fit(wf_params)
+
+    # find the probability that each cell belongs to each cluster
+    probs = wf_model.predict_proba(wf_params)
+
+    # label each cell by its best cluster (excitatory is clu1)
+    labels = probs > prob_thresh
+    n_cells_clu = np.sum(labels, axis=0)
+    clu_idx = np.argsort(n_cells_clu)
+    sorted_labels = labels[:, clu_idx]
+
+    clu1_idx = sorted_labels[:, -1]
+    clu2_idx = sorted_labels[:, 0]
+    clu_none_idx = np.abs((clu1_idx + clu2_idx) - 1).astype(bool)
+
+    return clu1_idx, clu2_idx, clu_none_idx
+
+
 def clu_waveforms_kmeans(width, asymm, log_fr):
     '''
     use k-means clustering to identify putative
@@ -42,12 +75,17 @@ def clu_waveforms_kmeans(width, asymm, log_fr):
     H = kmeans.cluster_centers_
     W_raw = kmeans.labels_
 
-    # return the cluster indices
+    # get the cluster indices
     clu1_idx = W_raw.astype(bool)
     clu2_idx = np.abs(W_raw - 1).astype(bool)
 
-    return clu1_idx, clu2_idx
+    # swap as needed so interneurons are clu2
+    if np.sum(clu1_idx) < np.sum(clu2_idx):
+        clu1_idx_temp = clu2_idx.copy()
+        clu2_idx = clu1_idx
+        clu1_idx = clu1_idx_temp
 
+    return clu1_idx, clu2_idx
 
 ''' Waveform parameters '''
 def calc_spike_width(wf, sampling_rate=30000):
@@ -82,6 +120,13 @@ def calc_amp_assym(wf):
     a = np.max(wf[:trough_idx])
     b = np.max(wf[trough_idx:])
     return (b - a) / (b + a)
+
+def calc_cum_rates(log_fr):
+    # Calculate the cumulative probability of the firing rates
+    rates, bin_vals = np.histogram(log_fr, bins=50)
+    cumulative_rates = np.cumsum(rates)
+    norm_rates = (cumulative_rates - np.min(cumulative_rates)) / (np.max(cumulative_rates) - np.min(cumulative_rates))
+    return norm_rates, bin_vals[:-1]
 
 
 

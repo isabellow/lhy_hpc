@@ -28,6 +28,7 @@ def sort_wf_by_channel(session_dir, waveform_struct,
     mean_waveforms_sorted_reordered : shape (n_cells, n_channels, n_timepoints)
     max_site_sorted : channel with the waveform peak
     max_idx : index for the channel with the waveform peak
+    ch_names : list of strings, channel names associated with each index (optional)
     '''
     # intan header
     intan_info = load_matlab_data.loadmat_sbx(f"{session_dir}{data_dir}intan_info.mat")
