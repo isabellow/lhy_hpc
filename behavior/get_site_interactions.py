@@ -9,20 +9,21 @@ countHexInteractions and parts of runSiteIntGUI from RigControl/arena alignment
 ''' Set root directory '''
 root_dir = "Z:/Isabel/data/hpc_implants/" # locker
 # root_dir = "C:/Users/ilow1/Documents/code/bird_pose_tracking/model_output/" # local - update as needed
-bird_id = 'SLV132'
-session_id = '250303'
+bird_id = 'LMN146'
+session_id = '251121'
+pred_id = '251121'
 session_root = f"{root_dir}{bird_id}/{bird_id}_{session_id}/"
 
 
 ''' Define paths to models, smoothed keypoints, arena info '''
-pred_file = f'250307_posture_2stage_face.npy'
-pred_path = f"{session_root}{pred_file}"
-
 behavior_folder = f"{session_root}/behavior_data/"
+pred_file = f'{pred_id}_posture_2stage_face.npy'
+pred_path = f"{behavior_folder}{pred_file}"
 pos_file = 'posture_pos_smooth.npy'
 vel_file = 'posture_vel_smooth.npy'
+use_raw_pos = False
 
-arena_dir = 'C:/Users/ilow1/Documents/code/il_rig_control/arena_alignment/'
+arena_dir = 'C:/Users/Isabel/Documents/code/il_rig_control/arena_alignment/'
 arena_items_file = 'arena_items_2.mat'
 
 ''' Define mat file to save params and data '''
@@ -172,7 +173,6 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
     ''' Set interaction params '''
     # todo:
     #   check height thresholds and adjust as needed
-    #   check feeder/water detection --> use bounding box instead?
     #   check cache tolerance params and adjust/discard --> not using for now
     params = {
         "reproj_thresh": 10,  # Maximum reprojection error to count as a valid frame (pixels)
@@ -180,7 +180,6 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
         "cache_height_thresh": 0.023,  # Threshold for beak low enough for site interaction
         "merge_dur_thresh": 50,  # Threshold below which events at the same site *must* be merged (in frames at 50 fps)
         "feeder_height_thresh": 0.05,  # Threshold for beak low enough for feeder interaction
-        # "feeder_radius_thresh": 1.75 / 13,  # Threshold for beak close enough to the center for feeder interaction
         "water_height_thresh": 0.06,  # Threshold for beak low enough for water interaction
         "water_radius_thresh": 0.625 / 13,  # Threshold for beak close enough to the center for water dish interaction
         "beak_foot_dist_thresh": 0.03,  # Distance threshold to count beak and feet near enough for eating
@@ -211,7 +210,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
     # beak_radius_feeder = np.sqrt(np.sum(beak_pos[:, :2]**2, axis=1)) < params["feeder_radius_thresh"]
 
     ''' Detect interactions '''
-    print('\nDetecting perch interactions...')
+    print('Detecting perch interactions...')
     # Feet on perches
     feet_on_perch = np.zeros((n_frames, n_perches + n_feeders), dtype=bool)
     
@@ -228,7 +227,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
         feet_on_perch[:, n_perches + n] = tmp & feet_still & valid_frames
 
     # Beak on feet
-    print('\nDetecting beak-feet interactions...')
+    print('Detecting beak-feet interactions...')
     # todo: why is this not just feet_on_perch & beak_low_feet?
     beak_on_feet = np.zeros((n_frames, n_perches + n_feeders), dtype=bool)
 
@@ -245,7 +244,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
         beak_on_feet[:, n_perches + n] = tmp & beak_low_feet & feet_still & valid_frames
 
     # Beak on cache sites
-    print('\nDetecting beak-cache interactions...')
+    print('Detecting beak-cache interactions...')
     beak_on_cache = np.zeros((n_frames, n_cache_sites), dtype=bool)
 
     for n in range(n_cache_sites):
@@ -255,7 +254,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
         beak_on_cache[:, n] = tmp & beak_low_cache & feet_still & valid_frames
 
     # Beak on feeders
-    print('\nDetecting feeder and water interactions...')
+    print('Detecting feeder and water interactions...')
     beak_on_feeder = np.zeros((n_frames, n_feeders), dtype=bool)
 
     for n in range(n_feeders):
@@ -269,7 +268,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
 
     # Median filter interactions
     state_median_win = params["state_median_win"]
-    print(f"\n Median state filtering with {state_median_win} frames")
+    print(f"Median state filtering with {state_median_win} frames")
     feet_on_perch = medfilt(feet_on_perch.astype(float), kernel_size=(state_median_win, 1)).astype(bool)
     beak_on_feet = medfilt(beak_on_feet.astype(float), kernel_size=(state_median_win, 1)).astype(bool)
     beak_on_cache = medfilt(beak_on_cache.astype(float), kernel_size=(state_median_win, 1)).astype(bool)
@@ -278,7 +277,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
 
 
     ''' Merge operations '''
-    print('\nMerging interactions...')
+    print('Merging interactions...')
     # Define padded arrays to include start and end times
     beak_on_feet_padded = np.concatenate(([False], np.any(beak_on_feet, axis=1), [False]))
     beak_on_cache_padded = np.concatenate(([False], np.any(beak_on_cache, axis=1), [False]))
@@ -340,21 +339,27 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
 
     return data
 
-
-''' load the smoothed keypoints and calculate the foot speed '''
-print('\nLoading smoothed postural keypoints and velocity...')
-smooth_pts = np.load(f"{behavior_folder}{pos_file}") # n_frames, n_keypoints, 3
-smooth_vel = np.load(f"{behavior_folder}{vel_file}")
-foot_speed = np.sqrt(np.sum(np.mean(smooth_vel[:, [10, 14]], axis=1)**2, axis=1))
-
 ''' load the model output and get the body reprojection error '''
-print('\nGetting reprojection error...')
+print('Getting reprojection error...')
 results_dict = np.load(pred_path, allow_pickle=True).item()
 results = results_dict['results']
 body_reproj_error = results['com_rep_err'][:, 1]
 
+''' load the raw/smoothed keypoints and calculate the foot speed '''
+print('Loading smoothed postural keypoints and velocity...')
+if use_raw_pos:
+    smooth_pts = results['posture_preds']
+    foot_vel = np.diff(smooth_pts[:, [10, 14]], axis=0)*50
+    foot_speed = np.sqrt(np.sum(np.mean(foot_vel, axis=1)**2, axis=1))
+    foot_speed = np.insert(foot_speed, 0, foot_speed[0])
+else:
+    smooth_pts = np.load(f"{behavior_folder}{pos_file}") # n_frames, n_keypoints, 3
+    smooth_vel = np.load(f"{behavior_folder}{vel_file}") # n_frames, n_keypoints, 3
+    foot_speed = np.sqrt(np.sum(np.mean(smooth_vel[:, [10, 14]], axis=1)**2, axis=1))
+
+
 ''' load the arena objects '''
-print('\nGetting arena objects...')
+print('Getting arena objects...')
 arena_data = loadmat(f'{arena_dir}{arena_items_file}', squeeze_me=True)
 arena_data["perches"] = arena_data["perch_w_site"]
 arena_data["feeder_perches"] = arena_data["perch_no_site"]
@@ -362,7 +367,7 @@ arena_data["feeder_perches"] = arena_data["perch_no_site"]
 
 ''' Set the seed detection params for the matlab siteInteractionGUI '''
 # "Primal action" detection
-print('\n\nPrimal action detection')
+print('\nPrimal action detection')
 seed_struct = {}
 seed_struct["countData"] = count_arena_interactions(smooth_pts,
                                                     foot_speed,

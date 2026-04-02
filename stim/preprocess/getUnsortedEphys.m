@@ -2,16 +2,17 @@
 % Grab a subset of data from the raw data binary file (amplifier.dat)
 
 % Set file paths
-addpath(genpath('C:\Users\ilow1\Documents\code\lhy_hpc\utils\')) % functions to read Intan files
-root_dir = 'Z:\Isabel\data\hpc_implants\SLV132\SLV132_250310\SLV132_250310_122522\';
+addpath(genpath('C:\Users\Isabel\Documents\code\lhy_hpc\utils\')) % functions to read Intan files
+% root_dir = 'Z:\Isabel\data\hpc_implants\RBY92\RBY92_250627\RBY92_250627_102310\';
+root_dir = 'C:\Users\Isabel\Documents\data_temp\LMN146_251121\LMN146_251121_112348\';
 save_dir = fullfile(fileparts(root_dir),'raw_ephys_output'); 
-save_file_name = 'amplifier_data_by_stim_neg250.npy';
-save_stimt_file = 'stim_t_neg250.npy';
+save_file_name = 'amplifier_data_by_stim_neg.npy';
+save_stimt_file = 'stim_t_neg.npy';
 mkdir(save_dir)
 
 % Define desired time range to save
-t_start = 2350; % start t in seconds
-t_duration = 308; % duration in seconds
+t_start = 8738; % start t in seconds
+t_duration = 2775; % duration in seconds
 
 % Define time window around stim events to save
 pre_stim_t = 0.02; % time before stim in seconds
@@ -63,7 +64,7 @@ for i = 1:n_stim
 end
 
 % get the absolute stim sample indices
-stim_t = (stim_start_idx + (t_start*h.sample_rate))-1;
+stim_t = (stim_start_idx + (t_start*header.sample_rate))-1;
 
 % Save as a numpy array and struct
 writeNPY(data_by_stim, fullfile(save_dir, save_file_name));
