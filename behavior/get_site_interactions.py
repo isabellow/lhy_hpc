@@ -199,7 +199,7 @@ def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_d
     n_perches = len(arena_data["perches"])  # Number of perches
     n_feeders = len(arena_data["feeder_perches"])  # Number of feeder perches
 
-    ''' Utility indicators '''
+    ''' Filter variables '''
     valid_frames = body_reproj_error < params["reproj_thresh"]
     feet_still = foot_speed < params["speed_thresh"]
     beak_low_cache = beak_pos[:, 2] < params["cache_height_thresh"]
@@ -383,12 +383,6 @@ seed_struct["minLoseDur"] = 12  # Losses followed by gain within this timeframe 
 seed_struct["validFrames"] = np.convolve(body_reproj_error, np.ones(27) / 27, mode="same") < 13 # todo check this
 seed_struct["seedIntTol"] = 0  # Tolerance for overlap of site-interaction-end and seed Loss/Gain
 seed_struct["path"] = session_root  # Session path
-
-# Cache location - from the cacheLoc_botCam.mat file
-# saves when SaveCentroids is pressed on the bottom cam GUI
-# should load in the matlab script and also probably should realign to be more precise...
-# seed_struct["cacheLoc"] = cache_loc_bot_distort  
-
 
 # Average top and bottom beak positions
 beak_pos = np.mean(smooth_pts[:, [0, 1]], axis=1)
