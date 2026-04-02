@@ -94,17 +94,20 @@ for bird in bird_ids:
 
             # get the stim params
             stim_params = []
-            for file in os.listdir(ephys_dir):
-                if 'neg' in file:
+            for file in sorted(os.listdir(ephys_dir)):
+                if ('neg' in file) & ('amplifier' in file):
                     file_parts = file.split(sep='_')
-                    stim_pol = file_parts[-1][:-4]
-                    stim_params.append(stim_pol)
+                    if 'neg' in file_parts[-1]:
+                        stim_pol = file_parts[-1][:-4]
+                        stim_params.append(stim_pol)
             
             for idx, stim_pol in enumerate(stim_params):
+                print(f'loading stim data for {session_id}_{stim_pol}')
+
                 # load and preprocess the stim responses
                 raw_ephys = format_chronic_stim.load_stim(ephys_dir, stim_pol=stim_pol)
-                sorted_ephys, ch_names = format_chronic_stim.sort_stim_by_channel(ephys_dir, raw_ephys)
-                [n_channels, n_samples, n_stim] = sorted_ephys.shape
+                ephys_data, ch_names = format_chronic_stim.sort_stim_by_channel(ephys_dir, raw_ephys)
+                [n_channels, n_samples, n_stim] = ephys_data.shape
 
                 # get the stim times
                 stim_times = np.load(f'{ephys_dir}stim_t_{stim_pol}.npy')
@@ -121,21 +124,22 @@ for bird in bird_ids:
                 for i in range(n_channels):
                     if any(np.abs(avg_hash[i]) >= spk_thresh):
                         worm_ch_idx[i] = True
+            print(rf'{session_id} has {np.sum(worm_ch_idx)} total channels with stim responses')
             
             # check for collision dict files and collect projection cells
             # TODO add "keep_idx" to session spreadsheet to exclude false positives
             # ...or longer term TODO just improve the collision detection
             all_sig_cells = np.asarray([])
-            for file in os.listdir(ephys_dir):
+            for file in sorted(os.listdir(ephys_dir[:-17])):
                 if 'collision_props' in file:
-                    print(f'collecting collision data for session {session_id}')
-                    collision_dict = np.load(file)
+                    collision_dict = np.load(f'{ephys_dir[:-17]}{file}', allow_pickle=True).item()
                     sig_cells = collision_dict['sig_cell_IDs']
                     all_sig_cells = np.append(all_sig_cells, sig_cells)
 
             # remove double counted cells
             all_sig_cells, unique_idx = np.unique(all_sig_cells, return_index=True)
-            
+            print(f'{session_id} has {all_sig_cells.shape[0]} total cells with significant collisions (p <= 0.01)\n')
+
             # store the data
             data_dict[bird][session_id]['worm_ch_idx'] = worm_ch_idx
             if all_sig_cells.shape[0] > 0:
