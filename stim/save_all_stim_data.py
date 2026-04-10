@@ -2,27 +2,13 @@ import numpy as np
 
 import os 
 import sys
-sys.path.append("..//utils/")
-sys.path.append("..//anatomy/")
-sys.path.append("..//neural/")
-import color_utils, make_data_dict
-import get_probe_coords
-import format_waveform_data, waveform_analysis, waveform_plots
 import format_chronic_stim
-import matplotlib.pyplot as plt
+sys.path.append("..//utils/")
+import make_data_dict
 
 '''
 Collect the antidromic response data for all good stim sessions
 add this data to the session data dictionary
-
-TODO data:
-- likely projection cell (plausible collisions) (n_cells bool)
-- stim responses on best channel? (n_cells bool)
-
-TODO plots (other script):
-- cum fr for only channels w/ stim response
-- cum fr for all collision-verified cells across all sessions
-- anatomical parameters vs. stim response?
 '''
 ''' Set file paths '''
 root_dir = "Z:/Isabel/data/hpc_implants/"
@@ -50,7 +36,7 @@ for bird in data_dict.keys():
     bird_ids.append(bird)
 print(f'current birds with saved data: {bird_ids}')
 
-modify_dict = input("modify data dictionary? (y/n)")
+modify_dict = input("add birds or sessions? (y/n)")
 if modify_dict == 'y':
     data_dict = make_data_dict.modify_data_dict(root_dir, data_file)
 
@@ -70,12 +56,14 @@ for bird in bird_ids:
         # specify the file paths/session params
         if ('stim' in data_dict[bird][session_id]['preprocessed_data']) & ('ephys' in data_dict[bird][session_id]['preprocessed_data']):
             session_dir = f'{root_dir}{bird}/{bird}_{session_id}/'
-            for folder in os.listdir(session_dir):
+            for folder in sorted(os.listdir(session_dir)):
                 if f'{bird}_{session_id}' in folder:
                     ephys_id = folder[-13:]
-                    ephys_dir = f"{session_dir}{bird}_{ephys_id}/raw_ephys_output/"
-                    stim_sessions.append(f'{bird}_{session_id}')
-                    ephys_dirs.append(ephys_dir)
+                    for file in sorted(os.listdir(f"{session_dir}{bird}_{ephys_id}")):
+                        if 'kilosort4' in file:
+                            ephys_dir = f"{session_dir}{bird}_{ephys_id}/raw_ephys_output/"
+                            stim_sessions.append(f'{bird}_{session_id}')
+                            ephys_dirs.append(ephys_dir)
 
 
 '''
@@ -130,20 +118,25 @@ for bird in bird_ids:
             # TODO add "keep_idx" to session spreadsheet to exclude false positives
             # ...or longer term TODO just improve the collision detection
             all_sig_cells = np.asarray([])
+            all_sig_idx = np.asarray([])
             for file in sorted(os.listdir(ephys_dir[:-17])):
                 if 'collision_props' in file:
                     collision_dict = np.load(f'{ephys_dir[:-17]}{file}', allow_pickle=True).item()
                     sig_cells = collision_dict['sig_cell_IDs']
+                    sig_idx = collision_dict['sig_cell_idx']
                     all_sig_cells = np.append(all_sig_cells, sig_cells)
+                    all_sig_idx = np.append(all_sig_idx, sig_idx)
 
             # remove double counted cells
             all_sig_cells, unique_idx = np.unique(all_sig_cells, return_index=True)
+            all_sig_idx = all_sig_idx[unique_idx]
             print(f'{session_id} has {all_sig_cells.shape[0]} total cells with significant collisions (p <= 0.01)\n')
 
             # store the data
             data_dict[bird][session_id]['worm_ch_idx'] = worm_ch_idx
             if all_sig_cells.shape[0] > 0:
                 data_dict[bird][session_id]['proj_cell_IDs'] = all_sig_cells.astype(int)
+                data_dict[bird][session_id]['proj_cell_idx'] = all_sig_idx.astype(int)
 
 # save the updated dictionary
 np.save(data_file, data_dict)

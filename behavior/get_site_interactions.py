@@ -7,11 +7,12 @@ Used ChatGPT (checked and modified by IL) to convert and modify SC
 countHexInteractions and parts of runSiteIntGUI from RigControl/arena alignment 
 '''
 ''' Set root directory '''
-root_dir = "Z:/Isabel/data/hpc_implants/" # locker
+# root_dir = "Z:/Isabel/data/hpc_implants/" # locker
 # root_dir = "C:/Users/ilow1/Documents/code/bird_pose_tracking/model_output/" # local - update as needed
-bird_id = 'LMN146'
-session_id = '251121'
-pred_id = '251121'
+root_dir = "D:/" # local - update as needed
+bird_id = 'AMB154'
+session_id = '241122'
+pred_id = '260409'
 session_root = f"{root_dir}{bird_id}/{bird_id}_{session_id}/"
 
 
@@ -150,7 +151,7 @@ def detect_stateChanges_othermerge(state_matrix, other_times, dur_thresh):
 
 
 ''' Main function for "primal" action detection '''
-def  count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_data):
+def count_arena_interactions(smooth_pts, foot_speed, body_reproj_error, arena_data):
     '''
     Params
     ------
