@@ -3,13 +3,12 @@ import numpy as np
 import os 
 import sys
 sys.path.append("..//utils/")
-import color_utils, make_data_dict
-import format_waveform_data, waveform_analysis, waveform_plots
+import color_utils
+import waveform_plots
 import matplotlib.pyplot as plt
 
 '''
-Loads a dictionary containing waveform information for good stim sessions
-and adds new sessions to it as needed.
+Loads a dictionary containing waveform information for good stim sessions.
 
 Clusters and plots the waveform properties across all sessions as in Payne et al. 2021
 Computes and plots the cumulative firing rates across neurons by session and bird
@@ -22,83 +21,14 @@ TODO
 ''' File Paths '''
 root_dir = "Z:/Isabel/data/hpc_implants/"
 save_figs = f"../figures/basic_neural_analysis/"
-save_data = f"{root_dir}stim_session_data.npy"
+data_file = f"{root_dir}stim_session_data.npy"
 
-''' Load/create the dictionary of waveform data for all good stim sessions '''
-# load or create data dictionary and get bird list
+''' Load the dictionary of waveform data for all good stim sessions '''
 bird_ids = []
-if os.path.isfile(save_data):
-    data_dict = np.load(save_data, allow_pickle=True).item()
-    for bird in data_dict.keys():
-        bird_ids.append(bird)
-    print(f'current birds with saved data: {bird_ids}')
-    modify_dict = input("modify data dictionary? (y/n)")
-    if modify_dict == 'y':
-        data_dict = make_data_dict.modify_data_dict(root_dir, save_data)
-else:
-    data_dict = make_data_dict.modify_data_dict(root_dir, save_data)
-
-# update bird list
+data_dict = np.load(data_file, allow_pickle=True).item()
 for bird in data_dict.keys():
-    if bird in bird_ids:
-        continue
-    else:
-        bird_ids.append(bird)
-
-
-''' Load and organize the waveform properties '''
-for bird in bird_ids:
-    print(f'\ncollecting waveform data for {bird}')
-    bird_dir = f"{root_dir}{bird}/"
-    session_list = data_dict[bird]['all_sessions']
-    for session_id in session_list:
-        # only calculate for new data
-        if 'waveform_props' in data_dict[bird][session_id].keys():
-                continue
-
-        # specify the file paths
-        if 'ephys' in data_dict[bird][session_id]['preprocessed_data']:
-            session_dir = f'{bird_dir}/{bird}_{session_id}/'
-            for folder in os.listdir(session_dir):
-                if f'{bird}_{session_id}' in folder:
-                    ephys_id = folder[-13:]
-            
-            for file in os.listdir(f"{session_dir}{bird}_{ephys_id}"):
-                if 'kilosort4' in file:
-                    ks_dir = f"{bird}_{ephys_id}/{file}/"
-                    ephys_dir = f"{session_dir}{bird}_{ephys_id}/raw_ephys_output/"
-
-                    # load and format the waveform struct
-                    waveform_struct = format_waveform_data.load_wf_data(session_dir, ks_dir=ks_dir)
-                    wf_ids = waveform_struct['goodIDs']
-                    mean_waveforms, wf_channels, _, ch_names = format_waveform_data.sort_wf_by_channel('', waveform_struct,
-                                                                                                       data_dir=ephys_dir,
-                                                                                                       return_ch_names=True)       
-                    n_cells = mean_waveforms.shape[0]
-                    wf_ch_idx = np.asarray([ch_names.index(ch) for ch in wf_channels])
-
-                    # calculate the waveform properties
-                    fr = waveform_struct['meanRate']
-                    log_fr = np.log10(fr)
-                    width = np.zeros(n_cells)
-                    asymm = np.zeros(n_cells)
-                    for wf_idx in range(n_cells):
-                        best_ch = wf_ch_idx[wf_idx]
-                        width[wf_idx] = waveform_analysis.calc_spike_width(mean_waveforms[wf_idx, best_ch])
-                        asymm[wf_idx] = waveform_analysis.calc_amp_assym(mean_waveforms[wf_idx, best_ch])  
-
-                    # save by session and overall
-                    waveform_props = np.row_stack([asymm, width, log_fr])
-                    data_dict[bird][session_id]['waveform_props'] = waveform_props
-                    if 'all_waveform_props' in data_dict[bird].keys():
-                        all_props = data_dict[bird]['all_waveform_props']
-                        data_dict[bird]['all_waveform_props'] = np.column_stack([all_props, waveform_props])
-                    else:
-                        data_dict[bird]['all_waveform_props'] = waveform_props
-
-# save the updated dictionary
-np.save(save_data, data_dict)
-
+    bird_ids.append(bird)
+print(f'current birds with saved data: {bird_ids}')
 
 '''Cluster and plot the waveform properties across all birds '''
 # collect all the waveform properties

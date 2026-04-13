@@ -7,8 +7,7 @@ close all
 addpath(genpath('C:\Users\ilow1\Documents\code\lhy_hpc\behavior\')) % GUI functions
 
 % root session directory
-% sessionPath = 'Z:\Isabel\data\hpc_implants\SLV132\SLV132_250303\';
-sessionPath = 'Z:\Isabel\data\hpc_implants\AMB154\AMB154_241119\';
+sessionPath = 'Z:\Isabel\data\hpc_implants\AMB154\AMB154_241127\';
 cd(sessionPath),
 
 % cache locations and videos
@@ -22,8 +21,8 @@ topVid = fullfile(sessionPath,'blue_cam.avi'); %VideoReader('lFront.avi');
 % botVid = VideoReaderFFMPEG('bottom_cam.avi','FFMPEGPATH',ffmpegPath);
 % topVid = VideoReaderFFMPEG('blue_cam.avi','FFMPEGPATH',ffmpegPath);
 
-% Define the cacheNet - todo...trying with SC net for now...
-cacheNet_root = 'C:\Users\ilow1\Documents\code\bird_pose_tracking\cacheNet\';
+% Define the cacheNet
+cacheNet_root = 'C:\Users\Isabel\Documents\code\bird_pose_tracking\cacheNet\';
 cacheNet_file = 'cacheNet_739646_6829';
 cacheNet = load(fullfile(cacheNet_root, cacheNet_file));
 cacheNet = cacheNet.cacheNet;
@@ -72,12 +71,11 @@ seedStruct.cacheLoc = cacheLocBot_distort;
 %% Run the GUI
 % view on the L is the pre and post image of the current site
 % graph on the R is the seed count 
-% most useful workflow is to go to the first flag (using Flag # and the scroll wheel...don't remember the hot key for jump to first)
+% most useful workflow is to go to the first flag
 % then, toggle to Site # to see all the interactions for that site.
 % The hot key short-cut for this is "n"
 seedApp = siteInteractionGUI(seedStruct, botVid, cacheNet, topVid);
 
-% TODO how to run the GUI from the saved file?
 
 % add to GUI a plot of the 'smoothSeed' trace aligned to site interaction,
 % with onset/offset of interaction and any gain/loss marked

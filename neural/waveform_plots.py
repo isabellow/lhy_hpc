@@ -137,7 +137,7 @@ def plot_fr_by_pos(cell_pos, cell_fr, dmdl_bound, cmap = 'jet'):
     ax.zaxis.pane.set_color('xkcd:light grey')
 
     # add colorbar in the top-right corner
-    cax = fig.add_axes([0.55, 0.72, 0.005, 0.18])
+    cax = fig.add_axes([0.55, 0.95, 0.005, 0.18])
     cbar = fig.colorbar(sc, cax=cax)
     cbar.set_label('log firing rate')
     max_fr = np.round(np.nanmax(cell_fr), 1)
@@ -145,20 +145,22 @@ def plot_fr_by_pos(cell_pos, cell_fr, dmdl_bound, cmap = 'jet'):
     cbar.set_ticks([sc.norm.vmin, sc.norm.vmax])
     cbar.set_ticklabels([rf'$10^{{{min_fr}}}$', rf'$10^{{{max_fr}}}$'])
 
-    ax.view_init(azim=139, elev=38)
+    ax.view_init(azim=-50, elev=45)
     ax.set_box_aspect(aspect=None, zoom=1)
     plt.show()
 
     return fig, ax
 
 
-def plot_bool_by_pos(cell_pos, bool_idx, dmdl_bound, labels,
-                        colors=['xkcd:scarlet', 'xkcd:cobalt blue']):
+def plot_bool_by_pos(cell_pos, bool_idx, dmdl_bound, 
+                        labels, colors=['xkcd:scarlet', 'xkcd:cobalt blue']):
     '''
     Makes a scatter plot of N cells at cell_pos in 3D brain space,
     colored by the boolian bool_idx.
 
     For context, plots a dashed line at the DM/DL boundary defined by dmdl_bound.
+
+    Adds bird/shank labels to a 3D plot at the given insertion coords
 
     colors : list of strings, len (2)
         color of each set of points
@@ -173,8 +175,14 @@ def plot_bool_by_pos(cell_pos, bool_idx, dmdl_bound, labels,
     jit = np.random.randn(2, n_cells) * 3
 
 
-    # split by bool
-    not_bool_idx = np.abs(bool_idx-1).astype(bool)
+    # get the indices for the rest of the data
+    if bool_idx.dtype == bool:
+        not_bool_idx = np.abs(bool_idx-1).astype(bool)
+    else:
+        all_indices = np.arange(n_cells, dtype=int)
+        not_bool_idx = np.setdiff1d(all_indices, bool_idx)
+
+    # split the data
     cell_pos_A = cell_pos[bool_idx]
     cell_pos_B = cell_pos[not_bool_idx]
     jit_A = jit[:, bool_idx]
@@ -183,14 +191,14 @@ def plot_bool_by_pos(cell_pos, bool_idx, dmdl_bound, labels,
     # plot cell positions, split by bool
     sc = ax.scatter(cell_pos_A[:, 0]+jit_A[0], cell_pos_A[:, 1]+jit_A[1], cell_pos_A[:, 2],
                     c=colors[0], label=labels[0],
-                    s=10, lw=0, zorder=1, alpha=0.7)
+                    s=10, lw=0, zorder=1, alpha=0.6)
     sc = ax.scatter(cell_pos_B[:, 0]+jit_B[0], cell_pos_B[:, 1]+jit_B[1], cell_pos_B[:, 2],
                     c=colors[1],  label=labels[1],
-                    s=10, lw=0, zorder=1, alpha=0.7)
+                    s=10, lw=0, zorder=1, alpha=0.3)
 
     # plot DM/DL boundary
     ax.scatter(dmdl_bound[0], dmdl_bound[1], np.zeros_like(dmdl_bound[0]),
-                c='k', marker='.', s=1)
+                c='k', marker='.', s=2)
 
     # labels
     ax.set_xlabel('ML (um)')
@@ -214,10 +222,28 @@ def plot_bool_by_pos(cell_pos, bool_idx, dmdl_bound, labels,
     ax.zaxis.pane.set_color('xkcd:light grey')
 
     # add a legend
-    ax.legend(loc='upper right', bbox_to_anchor=(1.05, 1.0), markerscale=2)
+    ax.legend(loc='upper right', bbox_to_anchor=(1.0, 1.0), markerscale=2)
 
-    ax.view_init(azim=-130, elev=35)
+    ax.view_init(azim=-78, elev=34)
     ax.set_box_aspect(aspect=None, zoom=1)
     plt.show()
 
+    return fig, ax
+
+
+def add_bird_labels(fig, ax, bird_shank_list, insertion_coords):
+    '''
+    Add bird/shank labels to a 3D plot at the given insertion coords
+    '''
+    assert len(bird_shank_list) == insertion_coords.shape[0]
+
+    for i, bird_shank in enumerate(bird_shank_list):
+        ml_insert, ap_insert = insertion_coords[i]
+        dv_insert = 0
+        ax.text(ml_insert, ap_insert, dv_insert, bird_shank,
+                size='x-small', weight='semibold',
+                ha='left', va='bottom'
+                # zdir=(0, 200, -200),
+                # transform_rotates_text=False
+                )
     return fig, ax

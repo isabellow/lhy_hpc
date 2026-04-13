@@ -24,7 +24,7 @@ todo
 - label each bird on the plot
 - filter by antidromic resp/in vs out of nucleus
 - process amb and rby data
-- plot interneuron/excitatory identity vs anatomical position
+- make sure all stim sessions have collision analysis
 '''
 
 ''' Set file paths '''
@@ -69,10 +69,12 @@ if update_pos == 'y':
 # collect all the cell positions
 all_cell_pos = []
 for bird in bird_ids:
+    if bird == 'RBY94':
+        continue
     for session_id in data_dict[bird]['all_sessions']:
         if 'cell_pos' in data_dict[bird][session_id].keys():
             cell_pos = data_dict[bird][session_id]['cell_pos']
-            if all_cell_pos == []:
+            if len(all_cell_pos) == 0:
                 all_cell_pos = cell_pos
             else:
                 all_cell_pos = np.row_stack([all_cell_pos, cell_pos])
@@ -87,6 +89,8 @@ dmdl = get_probe_coords.define_dm_dl(ap_lims, n_pts=100)
 for i, bird in enumerate(bird_ids):
     if i == 0:
         all_waveform_props = data_dict[bird]['all_waveform_props']
+    elif bird == 'RBY94':
+        continue
     else:
         waveform_props = data_dict[bird]['all_waveform_props']
         all_waveform_props = np.column_stack([all_waveform_props, waveform_props])
@@ -97,8 +101,22 @@ log_fr = all_waveform_props[2]
 # cluster to get the excitatory index
 exc_idx, _ = waveform_analysis.clu_waveforms_kmeans(width, asymm, log_fr)
 
+# collect the bird/shank IDs and insertion coordinates
+bird_shank_list = []
+for i, bird in enumerate(bird_ids):
+    if bird == 'RBY94':
+        continue
+    insert_coords = data_dict[bird]['insert_coords']
+    bird_shank_list.append(f'{bird}_A')
+    bird_shank_list.append(f'{bird}_B')
+    if i == 0:
+        all_insert_coords = insert_coords[:, :2]
+    else:
+        all_insert_coords = np.row_stack((all_insert_coords, insert_coords[:, :2]))
+
 ''' Plot firing rate by cell location for all cells '''
 fig, ax = waveform_plots.plot_fr_by_pos(all_cell_pos[exc_idx], log_fr[exc_idx], dmdl)
+fig, ax = waveform_plots.add_bird_labels(fig, ax, bird_shank_list, all_insert_coords)
 fig.savefig(f'{save_figs}fr_by_pos.png', 
                       dpi=600, bbox_inches='tight')
 
@@ -106,5 +124,6 @@ fig.savefig(f'{save_figs}fr_by_pos.png',
 fig, ax = waveform_plots.plot_bool_by_pos(all_cell_pos, exc_idx, dmdl,
                                             labels=['excitatory', 'inhibitory'],
                                             colors=['xkcd:scarlet', 'xkcd:cobalt blue'])
+fig, ax = waveform_plots.add_bird_labels(fig, ax, bird_shank_list, all_insert_coords)
 fig.savefig(f'{save_figs}id_by_pos.png', 
                       dpi=600, bbox_inches='tight')
