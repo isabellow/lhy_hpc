@@ -3,8 +3,8 @@ import numpy as np
 import os 
 import sys
 sys.path.append("..//utils/")
-import color_utils, make_data_dict
-import format_waveform_data, waveform_analysis, waveform_plots
+import color_utils
+import waveform_plots
 import matplotlib.pyplot as plt
 
 '''
@@ -21,7 +21,7 @@ TODO
 ''' File Paths '''
 root_dir = "Z:/Isabel/data/hpc_implants/"
 save_figs = f"../figures/basic_neural_analysis/"
-save_data = f"{root_dir}stim_session_data.npy"
+data_file = f"{root_dir}stim_session_data.npy"
 
 ''' Load the dictionary of waveform data for all good stim sessions '''
 bird_ids = []

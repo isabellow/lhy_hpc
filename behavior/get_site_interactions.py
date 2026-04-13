@@ -7,12 +7,11 @@ Used ChatGPT (checked and modified by IL) to convert and modify SC
 countHexInteractions and parts of runSiteIntGUI from RigControl/arena alignment 
 '''
 ''' Set root directory '''
-# root_dir = "Z:/Isabel/data/hpc_implants/" # locker
+root_dir = "Z:/Isabel/data/hpc_implants/" # locker
 # root_dir = "C:/Users/ilow1/Documents/code/bird_pose_tracking/model_output/" # local - update as needed
-root_dir = "D:/" # local - update as needed
 bird_id = 'AMB154'
-session_id = '241122'
-pred_id = '260409'
+session_id = '241127'
+pred_id = '260410'
 session_root = f"{root_dir}{bird_id}/{bird_id}_{session_id}/"
 
 
