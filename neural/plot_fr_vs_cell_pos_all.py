@@ -20,9 +20,11 @@ and add it to the dict.
     - AP est using hpc width and shank A/B
 
 
-todo
-- label each bird on the plot
+todo plots
 - filter by antidromic resp/in vs out of nucleus
+- compute average firing rate in smaller time windows to account for drift?
+
+todo data munging
 - process amb and rby data
 - make sure all stim sessions have collision analysis
 '''
