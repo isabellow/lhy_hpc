@@ -12,19 +12,19 @@ and adds new sessions to it as needed
 
 Saves per session:
 ephys_id : string
-	folder name for ephys data with sorted cells
+    folder name for ephys data with sorted cells
 waveform_props : array, shape (3, n_cells)
-	asymm, width, log_fr for each cell
+    asymm, width, log_fr for each cell
 
 Saves per bird:
 all_waveform_props : array, shape (3, n_cells_all_sessions)
-	asymm, width, log_fr for each cell across all sessions
+    asymm, width, log_fr for each cell across all sessions
 '''
 
 ''' File Paths '''
 root_dir = "Z:/Isabel/data/hpc_implants/"
-save_figs = f"../figures/basic_neural_analysis/"
 save_data = f"{root_dir}stim_session_data.npy"
+data_file = f"{root_dir}stim_session_data.npy"
 
 ''' Load the data dictionary of all good stim sessions '''
 bird_ids = []
@@ -65,7 +65,7 @@ for bird in bird_ids:
             
                     for file in sorted(os.listdir(f"{session_dir}{bird}_{ephys_id}")):
                         if 'kilosort4' in file:
-                        	data_dict[bird][session_id]['ephys_id'] = ephys_id
+                            data_dict[bird][session_id]['ephys_id'] = ephys_id
                             ks_dir = f"{bird}_{ephys_id}/{file}/"
                             ephys_dir = f"{session_dir}{bird}_{ephys_id}/raw_ephys_output/"
 

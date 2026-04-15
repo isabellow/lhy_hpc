@@ -5,6 +5,7 @@ import os
 import sys
 sys.path.append("..//utils/")
 import color_utils
+from format_behavior_data import load_behavior_data, format_feeder_ints
 from load_matlab_data import loadmat_sbx
 import matplotlib.pyplot as plt
 
@@ -55,8 +56,7 @@ dt = np.unique(np.round(np.diff(framet_raw), 4))
 
 ''' Load and format behavior data '''
 data_dir = f"{root_dir}{bird}/{bird}_{session_id}/behavior_data/"
-seed_struct = loadmat_sbx(f'{data_dir}annotatedSeeds.mat')['annotatedSeeds']
-count_data = seed_struct['countData']
+seed_struct, count_data = load_behavior_data(data_dir)
 
 # get cache/retrieval offsets
 all_int_end = count_data['endSite']
@@ -69,9 +69,7 @@ eat_onsets = count_data['newBeakPerch']
 eat_offsets = count_data['endBeakPerch']
 
 # get all feeder interactions
-# todo modify so this is feeder perch arrival/departure
-all_feeder_start = count_data['newFeeder']
-all_feeder_end = count_data['endFeeder']
+feeder_int_start, feeder_int_end, feeder_idx = get_feeder_ints(count_data, use_beak=True)
 
 # get the foot speed (cm/sec)
 posture_vel_file = 'posture_vel_smooth.npy'

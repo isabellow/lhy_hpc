@@ -9,7 +9,6 @@ import helpers
 def load_wf_data(session_dir, ks_dir='kilosort4'):
     waveform_struct = load_matlab_data.loadmat_sbx(f"{session_dir}{ks_dir}waveformStruct.mat")
     waveform_struct = waveform_struct['wvStruct']
-    print(waveform_struct.keys())
     return waveform_struct
 
 def load_wf_multi_session(wf_file_path):
