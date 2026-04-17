@@ -94,7 +94,7 @@ def get_feeder_periods(session_info_file, bird, session_id):
     feeder_open_times = [int(t) for t in feeder_open_list]
     feeder_close_times = [int(t) for t in feeder_close_list]
 
-    return feeder_open_times, feeder_close_times
+    return np.asarray(feeder_open_times), np.asarray(feeder_close_times)
 
 
 

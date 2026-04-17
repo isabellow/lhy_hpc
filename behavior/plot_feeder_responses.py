@@ -9,7 +9,9 @@ from load_matlab_data import loadmat_sbx
 sys.path.append("..//neural/")
 from format_waveform_data import get_spike_times
 from format_behavior_data import load_behavior_data, get_feeder_ints, get_feeder_periods, classify_feeder_ints
+
 import matplotlib.pyplot as plt
+from scipy.ndimage import gaussian_filter1d
 
 '''
 For all sessions for a given bird:
@@ -38,7 +40,7 @@ firing_up = 2 # >= considered elevated firing rate
 firing_down = 2 # <= considered reduced firing rate
 
 ''' Data params '''
-bird = 'AMB154' # update as needed
+bird = 'SLV132' # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
 
@@ -63,7 +65,8 @@ else:
 
 ''' Plot feeder responses for each session '''
 for session_id in behavior_sessions:
-    print(f'analyzing {bird}_{session_id}')
+    print(f'plotting feeder responsive cells for {bird}_{session_id}')
+    feeder_exclude = 0
 
     ''' Get the file params '''
     session_dir = f"{root_dir}{bird}/{bird}_{session_id}/"
@@ -82,7 +85,8 @@ for session_id in behavior_sessions:
     sampling_rate = 30000 # intan
     framet_raw = np.load(f'{data_dir}frame_times.npy')
     framet_raw = np.squeeze(framet_raw)
-    dt = np.unique(np.round(np.diff(framet_raw), 4))
+    dt = np.unique(np.round(np.diff(framet_raw), 2))
+    dt = dt[0]
 
     # align so that 0 is the video start time
     start_t = framet_raw[0]
@@ -350,6 +354,8 @@ for session_id in behavior_sessions:
     feeder_offset_psth_smooth = gaussian_filter1d(feeder_offset_psth, 5, axis=2, mode='nearest')
 
     ''' Check for cells with firing modulations near feeder interactions '''
+    n_open_ids = np.unique(open_feeder_idx).shape[0]
+    n_open_int = feeder_switch_pts[n_open_ids-1]
     feeder_tuned_idx = np.asarray([])
     for c_idx in range(n_cells):
         baseline = avg_firing_rate[c_idx]
@@ -357,18 +363,19 @@ for session_id in behavior_sessions:
         up_thresh = baseline*firing_up
         down_thresh = baseline/firing_down
         if (feeder_psth >= up_thresh).any() | (feeder_psth <= down_thresh).any():
-            feeder_tuned_idx = np.append(feeder_tuned_idx, c_idx)
+            if np.sum(feeder_off_mat[c_idx, :n_open_int]) > n_open_int:
+                feeder_tuned_idx = np.append(feeder_tuned_idx, c_idx)
+    feeder_tuned_idx = feeder_tuned_idx.astype(int)
 
 
     ''' Plot feeder tuning for cells with firing rate modulations '''
+    # TODO not everything is plotting??
     # fig params
     feeder_colors = ['xkcd:saffron', 'green', 'xkcd:scarlet', 'blue', 'k', 
                      'xkcd:saffron', 'green', 'xkcd:scarlet', 'blue']
-    spk_s = 6
     psth_lw = 3
     on_lw = 1
     off_lw = 1
-    on_s = 3
     time_int = 5
 
     # font sizes
@@ -377,14 +384,21 @@ for session_id in behavior_sessions:
     tick_label = 10
 
     # data params
-    n_open_ids = np.unique(open_feeder_idx).shape[0]
     avg_fr_session = np.round(avg_firing_rate, 2)
-    n_open_int = feeder_switch_pts[n_open_ids-1]
 
+    # determine spike size from N events
+    spk_s = 18510/(n_open_int**2)
+    on_s = spk_s/2
+
+    plt.ion()
+    f, ax = plt.subplots(1, 4, figsize=(10, 2.5),
+                             gridspec_kw=dict(width_ratios=[1, 0.2, 1, 1], wspace=0.1))
     for c_idx in feeder_tuned_idx:
         cell_id = good_clusters[c_idx]
-        f, ax = plt.subplots(1, 4, figsize=(10, 2.5),
-                             gridspec_kw=dict(width_ratios=[1, 0.2, 1, 1], wspace=0.1))
+
+        # clear last plot
+        for j in range(4):
+            ax[j].clear()
         
         # remove extraneous tick labels and axes
         for j in range(2):
@@ -417,13 +431,16 @@ for session_id in behavior_sessions:
         start_idx = 0
         for state_idx, end_idx in enumerate(feeder_switch_pts[:n_open_ids]):            
             # psth aligned to onsets and offsets
-            if n_visits[state_idx] < 5:
-                print(f'excluding feeder {state_idx+1} from PSTH (too few trials)')
+            if (n_visits[state_idx] < 5):
+                if (feeder_exclude==0):
+                    print(f'excluding feeder {state_idx+1} from PSTH (too few trials)')
             else:
                 ax[2].plot(timepoints_on, feeder_onset_psth_smooth[c_idx, state_idx], 
                            lw=psth_lw, color=feeder_colors[state_idx])
                 ax[3].plot(timepoints_off, feeder_offset_psth_smooth[c_idx, state_idx],
                            lw=psth_lw, color=feeder_colors[state_idx])
+            if state_idx+1 == n_open_ids:
+                feeder_exclude = 1
         
             # label onsets and offsets for the rasters        
             ax[0].vlines(0, 0, n_open_int, colors='k', linestyles='dashed', lw=off_lw)
@@ -433,8 +450,8 @@ for session_id in behavior_sessions:
             start_idx = end_idx
                        
         # label onset and offset, baseline FR for the psth
-        max_on = np.ceil(np.nanmax(feeder_onset_psth_smooth[c_idx]))
-        max_off = np.ceil(np.nanmax(feeder_offset_psth_smooth[c_idx]))
+        max_on = np.ceil(np.nanmax(feeder_onset_psth_smooth[c_idx, :n_open_ids]))
+        max_off = np.ceil(np.nanmax(feeder_offset_psth_smooth[c_idx, :n_open_ids]))
         max_all = np.max([max_on, max_off])
         ax[2].vlines(0, 0, max_all, colors='k', linestyles='dashed', lw=off_lw)
         ax[3].vlines(0, 0, max_all, colors='k', linestyles='dashed', lw=off_lw)
@@ -465,5 +482,9 @@ for session_id in behavior_sessions:
         ax[2].set_ylabel('average firing rate (Hz)', fontsize=axis_label)
         ax[0].set_ylabel('open feeder visits', fontsize=axis_label)
                          
-        plt.show()
         f.savefig(f'{save_folder}/{session_id}_feeder_tuning_cell{cell_id}.png', dpi=400, bbox_inches='tight')
+
+        # show the plot until the viewer chooses to advance
+        f.canvas.draw_idle()
+        plt.show()
+        input('press enter for next plot')
