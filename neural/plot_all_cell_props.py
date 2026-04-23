@@ -4,7 +4,7 @@ import os
 import sys
 sys.path.append("..//utils/")
 import color_utils
-import waveform_plots
+import waveform_plots, waveform_analysis
 import matplotlib.pyplot as plt
 
 '''
