@@ -21,19 +21,23 @@ save_figs_dir = f"../figures/basic_neural_analysis/"
 data_file = f"{root_dir}stim_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
 
+''' Load the data dictionary for all good stim sessions '''
+bird_ids = []
+data_dict = np.load(data_file, allow_pickle=True).item()
+for bird in data_dict.keys():
+    bird_ids.append(bird)
+
 ''' Plotting params '''
 # feeder time windows
-t_pre = int(2/dt)
-t_begin = int(1/dt)
-t_end = int(1/dt)
-t_post = int(2/dt)
-n_timepoints = t_pre + t_begin + t_end + t_post
+t_pre_sec = 2
+t_begin_sec = 1
+t_end_sec = 1
+t_post_sec = 2
 
 # font sizes
 title_size = 14
 axis_label = 12
-tick_label = 10
-
+tick_label = 9
 
 ''' Get the hand-annotated feeder response info '''
 feeder_info = pd.read_excel(session_info_file, sheet_name='Feeder Coding', header=0)
@@ -60,6 +64,8 @@ for i, row in feeder_info.iterrows():
 
 
 for bird in bird_ids:
+    if bird == 'LIM63':
+        continue
     print(f'\nplotting feeder responses for {bird}')
     
     # to save figures
@@ -84,6 +90,12 @@ for bird in bird_ids:
             behavior_sessions.append(session_id)
 
     for session_id in behavior_sessions:
+        # skip sessions with too few feeder visits
+        if (bird == 'AMB154') & (session_id == '241114'):
+            continue
+        elif (bird == 'IND67') & (session_id == '251014'):
+            continue
+        
         ''' Get the file params '''
         session_dir = f"{root_dir}{bird}/{bird}_{session_id}/"
         data_dir = f"{session_dir}/behavior_data/"
@@ -163,6 +175,13 @@ for bird in bird_ids:
         feeder_status = classify_feeder_ints(feeder_int_start, feeder_int_end, feeder_open_times, feeder_close_times)
         n_feeder_int = feeder_int_start.shape[0]
 
+        # convert feeder time windows to frames
+        t_pre = int(t_pre_sec/dt)
+        t_begin = int(t_begin_sec/dt)
+        t_end = int(t_end_sec/dt)
+        t_post = int(t_post_sec/dt)
+        n_timepoints = t_pre + t_begin + t_end + t_post
+
         ''' Activity of all cells relative to onset/ offset of feeder interactions '''
         # responses for each interaction
         all_feeder_responses = np.zeros((n_feeder_int, n_cells, n_timepoints))
@@ -184,18 +203,22 @@ for bird in bird_ids:
         during_response = np.sum(avg_feeder_responses[:, t_pre:t_end+t_begin+t_pre],  axis=1)/(t_begin+t_end)
         post_response = np.sum(avg_feeder_responses[:, -t_post:],  axis=1)/(t_post)
         sort_idx = np.argsort(during_response)  
+        assert sort_idx.shape[0] == avg_feeder_responses.shape[0]
 
         # report fractions of responsive cells
-        print('hand annotated feeder response proportions:')
-        these_feeder_cells = feeder_coding_dict[bird][session_id]
-        for key in these_feeder_cells.keys():
-            n_feeder_cells = these_feeder_cells[key].shape[0]
-            frac_feeder_cells = np.round(n_feeder_cells/n_cells*100, 2)
-            print(f"{frac_feeder_cells}% had {key} feeder responses ({n_feeder_cells}/{n_cells})")
+        if session_id in feeder_coding_dict[bird].keys():
+            these_feeder_cells = feeder_coding_dict[bird][session_id]
+        else:
+            continue
+        # print('hand annotated feeder response proportions:')
+        # for key in these_feeder_cells.keys():
+        #     n_feeder_cells = these_feeder_cells[key].shape[0]
+        #     frac_feeder_cells = np.round(n_feeder_cells/n_cells*100, 2)
+        #     print(f"{frac_feeder_cells}% had {key} feeder responses ({n_feeder_cells}/{n_cells})")
 
         ''' Save across sessions '''
         if bird_feeder_responses.shape[0] > 0:
-            bird_feeder_responses = np.row_stack(bird_feeder_responses, avg_feeder_responses)
+            bird_feeder_responses = np.row_stack((bird_feeder_responses, avg_feeder_responses))
         else:
             bird_feeder_responses = avg_feeder_responses
 
@@ -220,17 +243,16 @@ for bird in bird_ids:
         ax[2].set_xlabel('normalized activity (std)')
         ax[2].set_title('responses to feeder departure')
 
-        plt.show()
         f.savefig(f'{save_figs}/{bird}_{session_id}_feeder_responses.png', dpi=400, bbox_inches='tight')
 
         ''' Plot average responses for all cells '''
         # plot responses relative to onset/offset
         gs_kw = dict(wspace=0.05)
         f, ax = plt.subplots(1, 2, figsize=(6, 6), gridspec_kw=gs_kw)
-        ax[0].imshow(avg_feeder_responses[sort_idx, :n_timepoints//2], clim=[-1, 1], 
-                     aspect='auto', cmap='bwr', interpolation='none')
-        ax[1].imshow(avg_feeder_responses[sort_idx, n_timepoints//2:], clim=[-1, 1], 
-                     aspect='auto', cmap='bwr', interpolation='none')
+        im0 = ax[0].imshow(avg_feeder_responses[sort_idx, :n_timepoints//2], clim=[-1, 1], 
+                            aspect='auto', cmap='bwr', interpolation='none')
+        im1 = ax[1].imshow(avg_feeder_responses[sort_idx, n_timepoints//2:], clim=[-1, 1], 
+                            aspect='auto', cmap='bwr', interpolation='none')
         ylims = ax[0].get_ylim()
 
         # plot arrival/departure
@@ -255,11 +277,19 @@ for bird in bird_ids:
         ax[0].set_xticklabels(ax0_labels.astype(int))
         ax[1].set_xticklabels(ax1_labels.astype(int))
 
-        plt.show()
+        # add a colorbar
+        cax = f.add_axes([0.93, 0.62, 0.02, 0.22]) # [left, bottom, width, height]
+        cbar = f.colorbar(im1, cax=cax, orientation='vertical')
+        cbar.set_label('activity (z-score)', fontsize=tick_label)
+        cbar.set_ticks([])
+        cbar.ax.text(0.5, -0.05, '-1 std', transform=cbar.ax.transAxes,
+                        ha='center', va='top', fontsize=tick_label)
+        cbar.ax.text(0.5, 1.02, '1 std', transform=cbar.ax.transAxes,
+                        ha='center', va='bottom', fontsize=tick_label)
         f.savefig(f'{save_figs}/{bird}_{session_id}_feeder_tuning.png', dpi=400, bbox_inches='tight')
 
 
-    ''' Plot for bird across all sessions '''
+    ''' Plot for bird across all sessions - sorted by activity during '''
     during_response = np.sum(bird_feeder_responses[:, t_pre:t_end+t_begin+t_pre],  axis=1)/(t_begin+t_end)
     sort_idx = np.argsort(during_response)
     pct_upstart = np.round(n_cells_upstart/n_cells_total*100, 2)
@@ -268,15 +298,15 @@ for bird in bird_ids:
     # plot responses relative to onset/offset
     gs_kw = dict(wspace=0.05)
     f, ax = plt.subplots(1, 2, figsize=(6, 6), gridspec_kw=gs_kw)
-    ax[0].imshow(avg_feeder_responses[sort_idx, :n_timepoints//2], clim=[-1, 1], 
+    ax[0].imshow(bird_feeder_responses[sort_idx, :n_timepoints//2], clim=[-1, 1], 
                  aspect='auto', cmap='bwr', interpolation='none')
-    ax[1].imshow(avg_feeder_responses[sort_idx, n_timepoints//2:], clim=[-1, 1], 
-                 aspect='auto', cmap='bwr', interpolation='none')
+    im1 = ax[1].imshow(bird_feeder_responses[sort_idx, n_timepoints//2:], clim=[-1, 1], 
+                        aspect='auto', cmap='bwr', interpolation='none')
     ylims = ax[0].get_ylim()
 
     # plot arrival/departure
-    ax[0].vlines(t_pre, 0, n_cells, colors='k', linestyles='dashed', lw=0.5)
-    ax[1].vlines(t_end, 0, n_cells, colors='k', linestyles='dashed', lw=0.5)
+    ax[0].vlines(t_pre, 0, n_cells_total, colors='k', linestyles='dashed', lw=0.5)
+    ax[1].vlines(t_end, 0, n_cells_total, colors='k', linestyles='dashed', lw=0.5)
     ax[0].set_ylim(ylims)
     ax[1].set_ylim(ylims)
 
@@ -286,9 +316,9 @@ for bird in bird_ids:
     ax[0].set_ylabel('cells sorted by activity during feeder visit')
     ax[1].set_yticks([])
     ax[1].tick_params(labelleft=False)
-    ax[0].set_title(fr"{n_cells_upstart}/{n_cells_total} $\uparrow$ approach")
-    ax[1].set_title(fr"{n_cells_upend}/{n_cells_total} $\uparrow$ departure")
-    f.suptitle(f'all feeder-aligned responses for {bird}', y=0.91)
+    ax[0].set_title(fr"{n_cells_upstart}/{n_cells_total} $\uparrow$ approach", fontsize=axis_label)
+    ax[1].set_title(fr"{n_cells_upend}/{n_cells_total} $\uparrow$ departure", fontsize=axis_label)
+    f.suptitle(f'all feeder-aligned responses for {bird}', y=0.95, fontsize=title_size)
 
     # ticks
     ax[0].set_xticks(np.arange(0, t_pre+t_begin+1/dt, 1/dt))
@@ -298,6 +328,71 @@ for bird in bird_ids:
     ax[0].set_xticklabels(ax0_labels.astype(int))
     ax[1].set_xticklabels(ax1_labels.astype(int))
 
-    plt.show()
+    # add a colorbar
+    cax = f.add_axes([0.93, 0.62, 0.02, 0.22]) # [left, bottom, width, height]
+    cbar = f.colorbar(im1, cax=cax, orientation='vertical')
+    cbar.set_label('activity (z-score)', fontsize=tick_label)
+    cbar.set_ticks([])
+    cbar.ax.text(0.5, -0.05, '-1 std', transform=cbar.ax.transAxes,
+                    ha='center', va='top', fontsize=tick_label)
+    cbar.ax.text(0.5, 1.02, '1 std', transform=cbar.ax.transAxes,
+                    ha='center', va='bottom', fontsize=tick_label)
+
     f.savefig(f'{save_figs}/{bird}_feeder_tuning.png', dpi=400, bbox_inches='tight')
+
+
+    ''' Plot for bird across all sessions - sorted by activity at end '''
+    end_start_fr = 5
+    end_end_fr = 15
+    end_start_idx = t_begin+t_pre+t_end-end_start_fr
+    end_end_idx = t_begin+t_pre+t_end+end_end_fr
+    end_response = np.sum(bird_feeder_responses[:, end_start_idx:end_end_idx],  axis=1)/(t_begin+t_end)
+    sort_idx = np.argsort(end_response)
+    pct_upstart = np.round(n_cells_upstart/n_cells_total*100, 2)
+    pct_upend = np.round(n_cells_upend/n_cells_total*100, 2)
+
+    # plot responses relative to onset/offset
+    gs_kw = dict(wspace=0.05)
+    f, ax = plt.subplots(1, 2, figsize=(6, 6), gridspec_kw=gs_kw)
+    ax[0].imshow(bird_feeder_responses[sort_idx, :n_timepoints//2], clim=[-1, 1], 
+                 aspect='auto', cmap='bwr', interpolation='none')
+    im1 = ax[1].imshow(bird_feeder_responses[sort_idx, n_timepoints//2:], clim=[-1, 1], 
+                        aspect='auto', cmap='bwr', interpolation='none')
+    ylims = ax[0].get_ylim()
+
+    # plot arrival/departure
+    ax[0].vlines(t_pre, 0, n_cells_total, colors='k', linestyles='dashed', lw=0.5)
+    ax[1].vlines(t_end, 0, n_cells_total, colors='k', linestyles='dashed', lw=0.5)
+    ax[0].set_ylim(ylims)
+    ax[1].set_ylim(ylims)
+
+    # axis labels
+    ax[0].set_xlabel('time from arrival (sec)')
+    ax[1].set_xlabel('time from departure (sec)')
+    ax[0].set_ylabel('cells sorted by activity around departure')
+    ax[1].set_yticks([])
+    ax[1].tick_params(labelleft=False)
+    ax[0].set_title(fr"{n_cells_upstart}/{n_cells_total} $\uparrow$ approach", fontsize=axis_label)
+    ax[1].set_title(fr"{n_cells_upend}/{n_cells_total} $\uparrow$ departure", fontsize=axis_label)
+    f.suptitle(f'all feeder-aligned responses for {bird}', y=0.95, fontsize=title_size)
+
+    # ticks
+    ax[0].set_xticks(np.arange(0, t_pre+t_begin+1/dt, 1/dt))
+    ax[1].set_xticks(np.arange(0, t_post+t_end+1/dt, 1/dt))
+    ax0_labels = (np.arange(-t_pre, t_begin+1/dt, 1/dt))*dt
+    ax1_labels = (np.arange(-t_end, t_post+1/dt, 1/dt))*dt
+    ax[0].set_xticklabels(ax0_labels.astype(int))
+    ax[1].set_xticklabels(ax1_labels.astype(int))
+
+    # add a colorbar
+    cax = f.add_axes([0.93, 0.62, 0.02, 0.22]) # [left, bottom, width, height]
+    cbar = f.colorbar(im1, cax=cax, orientation='vertical')
+    cbar.set_label('activity (z-score)', fontsize=tick_label)
+    cbar.set_ticks([])
+    cbar.ax.text(0.5, -0.05, '-1 std', transform=cbar.ax.transAxes,
+                    ha='center', va='top', fontsize=tick_label)
+    cbar.ax.text(0.5, 1.02, '1 std', transform=cbar.ax.transAxes,
+                    ha='center', va='bottom', fontsize=tick_label)
+
+    f.savefig(f'{save_figs}/{bird}_feeder_tuning_altsort.png', dpi=400, bbox_inches='tight')
 

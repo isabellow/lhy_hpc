@@ -44,7 +44,7 @@ firing_up = 2 # >= considered elevated firing rate
 firing_down = 2 # <= considered reduced firing rate
 
 ''' Data params '''
-bird = 'IND67' # update as needed
+bird = 'AMB154' # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
 
