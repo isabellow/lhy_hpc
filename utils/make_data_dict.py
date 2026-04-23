@@ -58,7 +58,8 @@ def modify_data_dict(root_dir, save_data):
             if bird in session_folder:
                 session_ID = session_folder[-6:]
                 all_sessions.append(session_ID)
-                data_dict[bird][session_ID] = {}
+                if session_ID not in data_dict[bird].keys():
+                    data_dict[bird][session_ID] = {}
                 data_list = []
                 for folder in os.listdir(f'{bird_dir}/{session_folder}'):
                     # check for a recording and waveform struct
