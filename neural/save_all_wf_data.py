@@ -23,7 +23,6 @@ all_waveform_props : array, shape (3, n_cells_all_sessions)
 
 ''' File Paths '''
 root_dir = "Z:/Isabel/data/hpc_implants/"
-save_data = f"{root_dir}stim_session_data.npy"
 data_file = f"{root_dir}stim_session_data.npy"
 
 ''' Load the data dictionary of all good stim sessions '''
@@ -99,4 +98,4 @@ for bird in bird_ids:
                                 data_dict[bird]['all_waveform_props'] = all_props
 
 # save the updated dictionary
-np.save(save_data, data_dict)
+np.save(data_file, data_dict)

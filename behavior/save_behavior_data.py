@@ -16,7 +16,6 @@ todo other things?
 '''
 ''' File Paths '''
 root_dir = "Z:/Isabel/data/hpc_implants/"
-save_data = f"{root_dir}stim_session_data.npy"
 data_file = f"{root_dir}stim_session_data.npy"
 
 ''' Load the data dictionary of all good stim sessions '''
@@ -56,4 +55,4 @@ for bird in bird_ids:
                     flag = 1
 
 # save the updated dictionary
-np.save(save_data, data_dict)
+np.save(data_file, data_dict)

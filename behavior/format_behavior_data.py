@@ -10,6 +10,175 @@ def load_behavior_data(data_dir):
     count_data = seed_struct['countData']
     return(seed_struct, count_data)
 
+''' Classify arena interactions '''
+def get_cache_ints(count_data, seed_struct):
+    '''
+    Caches are site interactions where a seed is added
+    '''
+    # get all site interactions
+    all_int_start = count_data['newSite']
+    all_int_end = count_data['endSite']
+    all_int_changes = np.sum(seed_struct['seedChanges'], axis=1)
+    n_interactions = all_int_start.shape[0]
+
+    # caches = add a seed
+    cache_onsets = all_int_start[all_int_changes > 0]
+    cache_offsets = all_int_end[all_int_changes > 0]
+
+    return cache_onsets, cache_offsets
+
+def get_caches_refined(count_data, seed_struct, n_total_frames, dt=0.02):
+    '''
+    Caches are site interactions where a seed is added
+
+    Returns cache onset and offset times, 
+    as well as the perch ID for each cache
+    
+    Define a cache window as in SC, EM 2024
+    - 250 ms before cache onset to 250 ms after cache offset
+    - truncated to avoid other interactions
+    - caches > 2 sec, only include 1 sec after onset and 1 sec before offset
+    '''
+    # get all site interactions
+    all_int_start = count_data['newSite']
+    all_int_end = count_data['endSite']
+    all_site_idx = count_data['siteNum']
+    all_int_changes = np.sum(seed_struct['seedChanges'], axis=1)
+    n_interactions = all_int_start.shape[0]
+
+    # caches = add a seed
+    cache_onsets_raw = all_int_start[all_int_changes > 0]
+    cache_offsets_raw = all_int_end[all_int_changes > 0]
+    cache_perch_idx = all_site_idx[all_int_changes > 0]
+
+    # get all perch interactions
+    all_perch_start = count_data['newPerch']
+    all_perch_end = count_data['endPerch']
+    n_perches = all_perch_start.shape[0]
+
+    # +/-240 ms window around cache, avoiding other events
+    t_window = 0.25/dt
+    cache_onsets = np.asarray([])
+    cache_offsets = np.asarray([])
+    for cs, ce in zip(cache_onsets_raw, cache_offsets_raw):
+        # create the time window
+        cache_start = cs - t_window
+        cache_end = ce + t_window
+
+        # get the perch index for this cache event
+        temp_perch_start = all_perch_start.copy()
+        temp_perch_start[temp_perch_start > cs] = 0
+        cache_idx = np.argmin(cs-temp_perch_start)
+
+        # check for overlap with other events
+        if cache_idx > 0:
+            if all_perch_end[cache_idx-1] >= cache_start:
+                cache_start = all_perch_end[cache_idx-1]
+        if cache_idx < n_perches-1:
+            if all_perch_start[cache_idx+1] <= cache_end:
+                cache_end = all_perch_start[cache_idx+1]
+
+        # check session ends
+        if cache_start < 0:
+            cache_start = 0
+        if cache_end > n_total_frames:
+            cache_end = n_total_frames
+
+        cache_onsets = np.append(cache_onsets, cache_start)
+        cache_offsets = np.append(cache_offsets, cache_end)
+
+    return cache_onsets.astype(int), cache_offsets.astype(int), cache_perch_idx.astype(int)
+
+def get_visits_raw(count_data):
+    '''
+    Visits are perch interactions without eating or site interaction
+    '''
+    # get all perch interactions
+    all_perch_start = count_data['newPerch']
+    all_perch_end = count_data['endPerch']
+    all_perch_idx = count_data['perchNum']
+    n_perches = all_perch_start.shape[0]
+
+    # collect non-visit interactions
+    all_int_start = count_data['newSite']
+    all_int_end = count_data['endSite']
+    n_interactions = all_int_start.shape[0]
+    eat_onsets = count_data['newBeakPerch']
+    eat_offsets = count_data['endBeakPerch']
+    all_non_visit_start = np.append(eat_onsets, all_int_start)
+
+    # get visits by excluding other interactions
+    visits = np.full(n_perches, 1).astype(bool)
+    for i, (ps, pe) in enumerate(zip(all_perch_start, all_perch_end)):
+        start_idx = all_non_visit_start > ps
+        end_idx = all_non_visit_start < pe
+        if any(start_idx & end_idx):
+            visits[i] = False        
+    visit_onsets = all_perch_start[visits]
+    visit_offsets = all_perch_end[visits]
+
+    return visit_onsets, visit_offsets
+
+def get_visits_refined(count_data, n_total_frames, dt=0.02):
+    '''
+    Visits are perch interactions without eating or site interaction
+
+    Returns visit onset and offset times, 
+    as well as the perch ID for each visit
+
+    Define a visit window as in SC, EM 2024
+    +/- 500 ms from perch arrival, truncated to avoid other interactions
+    '''
+    # get all perch interactions
+    all_perch_start = count_data['newPerch']
+    all_perch_end = count_data['endPerch']
+    all_perch_idx = count_data['perchNum']
+    n_perches = all_perch_start.shape[0]
+
+    # collect non-visit interactions
+    all_int_start = count_data['newSite']
+    all_int_end = count_data['endSite']
+    n_interactions = all_int_start.shape[0]
+    eat_onsets = count_data['newBeakPerch']
+    eat_offsets = count_data['endBeakPerch']
+    all_non_visit_start = np.append(eat_onsets, all_int_start)
+
+    # get visits by excluding other interactions
+    visits = np.full(n_perches, 1).astype(bool)
+    for i, (ps, pe) in enumerate(zip(all_perch_start, all_perch_end)):
+        start_idx = all_non_visit_start > ps
+        end_idx = all_non_visit_start < pe
+        if any(start_idx & end_idx):
+            visits[i] = False        
+
+    # 1000ms window around visit onset, avoiding other events
+    t_window = 0.5/dt
+    visit_onsets = np.asarray([])
+    visit_offsets = np.asarray([])
+    for i, visit_t in enumerate(all_perch_start):
+        if visits[i]:
+            visit_start = visit_t - t_window
+            visit_end = visit_t + t_window
+
+            # check for overlap with other events
+            if i > 0:
+                if all_perch_end[i-1] >= visit_start:
+                    visit_start = all_perch_end[i-1]
+            if i < n_perches-1:
+                if all_perch_start[i+1] <= visit_end:
+                    visit_end = all_perch_start[i+1]
+
+            # check session ends
+            if visit_start < 0:
+                visit_start = 0
+            if visit_end > n_total_frames:
+                visit_end = n_total_frames
+
+            visit_onsets = np.append(visit_onsets, visit_start)
+            visit_offsets = np.append(visit_offsets, visit_end)
+
+    return visit_onsets.astype(int), visit_offsets.astype(int), all_perch_idx[visits].astype(int)
+
 
 ''' Classify feeder interactions '''
 def get_feeder_ints(count_data, use_beak=True, frame_rate=50, feeder_perches=np.asarray([84, 85, 86, 87])):

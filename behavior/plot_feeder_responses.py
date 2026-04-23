@@ -27,6 +27,10 @@ Raster aligned to feeder interactions sorted by:
 - feeder location
 - interaction duration
 Tuning cruves aligned to interaction onset/offset, split by feeder
+
+TODO:
+Add summary plot of feeder activation/suppression magnitude
+Print stats for N feeder responsive cells
 '''
 ''' File Paths '''
 root_dir = "Z:/Isabel/data/hpc_implants/"
