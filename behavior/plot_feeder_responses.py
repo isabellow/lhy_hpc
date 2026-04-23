@@ -44,7 +44,7 @@ firing_up = 2 # >= considered elevated firing rate
 firing_down = 2 # <= considered reduced firing rate
 
 ''' Data params '''
-bird = 'SLV132' # update as needed
+bird = 'IND67' # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
 
@@ -394,7 +394,7 @@ for session_id in behavior_sessions:
     spk_s = 18510/(n_open_int**2)
     on_s = spk_s/2
 
-    plt.ion()
+    # plt.ion()
     f, ax = plt.subplots(1, 4, figsize=(10, 2.5),
                              gridspec_kw=dict(width_ratios=[1, 0.2, 1, 1], wspace=0.1))
     for c_idx in feeder_tuned_idx:
@@ -489,6 +489,6 @@ for session_id in behavior_sessions:
         f.savefig(f'{save_folder}/{session_id}_feeder_tuning_cell{cell_id}.png', dpi=400, bbox_inches='tight')
 
         # show the plot until the viewer chooses to advance
-        f.canvas.draw_idle()
-        plt.show()
-        input('press enter for next plot')
+        # f.canvas.draw_idle()
+        # plt.show()
+        # input('press enter for next plot')
