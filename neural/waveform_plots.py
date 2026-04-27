@@ -95,7 +95,7 @@ def plot_cum_fr(individual_rates, individual_bins,
 
     return fig, ax
 
-def plot_fr_by_pos(cell_pos, cell_fr, dmdl_bound, cmap = 'jet'):
+def plot_fr_by_pos(cell_pos, cell_fr, dmdl_bound, cmap='jet'):
     '''
     TODO update slightly for any generic heatmap (not just firing rate)
     '''
