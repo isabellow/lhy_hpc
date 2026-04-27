@@ -165,8 +165,8 @@ def get_anatomy_info(session_info_file, data_dict):
         for session_id in session_info['id']:
             if session_id in data_dict[bird].keys():
                 # only calculate for new data
-                if 'depth' in data_dict[bird][session_id].keys():
-                    continue
+                # if 'depth' in data_dict[bird][session_id].keys():
+                #     continue
                 probe_depth = session_info.loc[session_info["id"] == session_id,
                                                "approx. depth (um)"].iloc[0]
                 data_dict[bird][session_id]['depth'] = probe_depth

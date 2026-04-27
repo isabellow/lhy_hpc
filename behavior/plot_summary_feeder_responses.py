@@ -8,12 +8,24 @@ sys.path.append("..//utils/")
 import color_utils, helpers
 from load_matlab_data import loadmat_sbx
 sys.path.append("..//neural/")
-from format_waveform_data import get_spike_times
+from format_waveform_data import get_spike_times, load_wf_data, sort_wf_by_channel
 from format_behavior_data import load_behavior_data, get_feeder_ints, get_feeder_periods, classify_feeder_ints
 
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter1d
 
+'''
+TODO:
+- try different time windows for offset avg for each bird
+--> could use vertical lines on the plot to show this window
+- try ratio of this avg to during (non-overlapping window)
+- montage of feeder departures per bird
+- aligning to ankles bending before/at turn away from feeder
+--> capture departure prep for both turn-first and hop-away birds
+
+- exclude low firing cells
+- exclude cells not on stim channels
+'''
 
 ''' File Paths '''
 root_dir = "Z:/Isabel/data/hpc_implants/"
@@ -28,11 +40,23 @@ for bird in data_dict.keys():
     bird_ids.append(bird)
 
 ''' Plotting params '''
-# feeder time windows
+# for filtering out cells
+fr_thresh = 0.05 # Hz, threshold for excluding low firing cells
+permissive = True # if true, includes channels w/o stim response that are surrounded by stim responsive channels
+
+# feeder visit time windows
 t_pre_sec = 2
 t_begin_sec = 1
 t_end_sec = 1
 t_post_sec = 2
+
+# frame windows for average offset activity (start, end)
+offset_window = {}
+offset_window['RBY94'] = np.asarray([14, 15])
+offset_window['AMB154'] = np.asarray([5, 15])
+offset_window['SLV132'] = np.asarray([5, 15])
+offset_window['LMN146'] = np.asarray([12, 15])
+offset_window['IND67'] = np.asarray([10, 15])
 
 # font sizes
 title_size = 14
@@ -145,6 +169,65 @@ for bird in bird_ids:
         log_fr = waveform_props[2]
         avg_firing_rate = 10**log_fr
 
+        ''' Filter out low-firing cells and cells not on stim channels '''
+        # firing rate higher than threshold
+        high_fr = avg_firing_rate > fr_thresh
+
+        # collect the stim response index
+        if 'worm_ch_idx' in data_dict[bird][session_id].keys():
+            stim_idx_ch = data_dict[bird][session_id]['worm_ch_idx']
+
+            # optionally keep cells on channels that are surrounded by stim responsive channels
+            if permissive:
+                n_channels = stim_idx_ch.shape[0]
+                shank_idx = n_channels//2
+                stim_idx_ch_adj = np.zeros(n_channels).astype(bool)
+                for ch in range(n_channels):
+                    if stim_idx_ch[ch]:
+                        stim_idx_ch_adj[ch] = True
+                        continue
+                    elif ch < shank_idx:
+                        dorsal_resp = np.any(stim_idx_ch[:ch])
+                        ventral_resp = np.any(stim_idx_ch[ch+1:shank_idx])
+                    elif ch >= shank_idx:
+                        dorsal_resp = np.any(stim_idx_ch[shank_idx:ch])
+                        ventral_resp = np.any(stim_idx_ch[ch+1:])                   
+                    if dorsal_resp & ventral_resp:
+                        stim_idx_ch_adj[ch] = True
+                stim_idx_ch = stim_idx_ch_adj
+
+            if bird == 'RBY94':
+                # get the channel indices for each cell
+                ephys_dir = f"{session_dir}{bird}_{ephys_id}/raw_ephys_output/"
+                waveform_struct = load_wf_data(session_dir, ks_dir=ks_dir)
+                _, wf_channels, _, ch_names = sort_wf_by_channel('', waveform_struct,
+                                                                    data_dir=ephys_dir,
+                                                                    return_ch_names=True)       
+                wf_ch_idx = np.asarray([ch_names.index(ch) for ch in wf_channels])
+
+                # determine if there's a stim response on each cell's channel
+                stim_idx_cell = np.zeros(n_cells).astype(bool)
+                for cell_idx, ch_idx in enumerate(wf_ch_idx):
+                    stim_idx_cell[cell_idx] = stim_idx_ch[ch_idx]
+            else:
+                # get the stim channel positions
+                ch_pos = data_dict[bird][session_id]['channel_pos']
+                stim_pos = ch_pos[stim_idx_ch.astype(bool)]
+
+                # match each cell to its channel position
+                cell_pos = data_dict[bird][session_id]['cell_pos']
+                stim_idx_cell = np.zeros(n_cells).astype(bool)
+                for cell_idx, this_pos in enumerate(cell_pos):
+                    stim_idx_cell[cell_idx] = np.any(np.all(stim_pos==this_pos, axis=1))
+        
+        else:
+            print(f'warning! no stim data for {bird}_{session_id}')
+            stim_idx_cell = np.ones(n_cells)
+
+        # create a filtering index for firing rate + stim response
+        cell_filt_idx = high_fr & stim_idx_cell
+
+
         ''' Normalize activity for population analysis '''
         # instantaneous firing rate
         inst_firing_rate = spike_fr/dt
@@ -192,7 +275,11 @@ for bird in bird_ids:
             this_feeder_end = norm_fr[:, feeder_off-t_end:feeder_off+t_post]
             all_feeder_responses[i] = np.column_stack([this_feeder_start, this_feeder_end])
         rows_to_keep = np.abs(np.sum(all_feeder_responses, axis=(1, 2))).astype(bool)
+        
+        # filter out incomplete feeder trials and low firing/stim non-responsive cells
         all_feeder_responses = all_feeder_responses[rows_to_keep]
+        all_feeder_responses = all_feeder_responses[:, cell_filt_idx]
+        n_cells_adj = np.sum(cell_filt_idx)
 
         # average response across interactions
         avg_feeder_responses = np.mean(all_feeder_responses, axis=0)
@@ -222,7 +309,7 @@ for bird in bird_ids:
         else:
             bird_feeder_responses = avg_feeder_responses
 
-        n_cells_total += n_cells
+        n_cells_total += n_cells_adj
         n_cells_upstart += feeder_coding_dict[bird][session_id]['up start'].shape[0]
         n_cells_upend += feeder_coding_dict[bird][session_id]['up end'].shape[0]
 
@@ -256,8 +343,8 @@ for bird in bird_ids:
         ylims = ax[0].get_ylim()
 
         # plot arrival/departure
-        ax[0].vlines(t_pre, 0, n_cells, colors='k', linestyles='dashed', lw=0.5)
-        ax[1].vlines(t_end, 0, n_cells, colors='k', linestyles='dashed', lw=0.5)
+        ax[0].vlines(t_pre, 0, n_cells_adj, colors='k', linestyles='dashed', lw=0.5)
+        ax[1].vlines(t_end, 0, n_cells_adj, colors='k', linestyles='dashed', lw=0.5)
         ax[0].set_ylim(ylims)
         ax[1].set_ylim(ylims)
 
@@ -288,6 +375,63 @@ for bird in bird_ids:
                         ha='center', va='bottom', fontsize=tick_label)
         f.savefig(f'{save_figs}/{bird}_{session_id}_feeder_tuning.png', dpi=400, bbox_inches='tight')
 
+    # ''' Plot for bird across all sessions - sorted by activity at start TODO! '''
+    # # get the offset-aligned average activity for a given window
+    # end_start_fr = offset_window[bird][0]
+    # end_end_fr = offset_window[bird][1]
+    # end_start_idx = t_begin+t_pre+t_end-end_start_fr
+    # end_end_idx = t_begin+t_pre+t_end+end_end_fr
+    # n_frames_offset = end_end_idx-end_start_idx
+    # end_response = np.sum(bird_feeder_responses[:, end_start_idx:end_end_idx],  axis=1)/(n_frames_offset)
+
+    # sort_idx = np.argsort(end_response)
+    # pct_upstart = np.round(n_cells_upstart/n_cells_total*100, 2)
+    # pct_upend = np.round(n_cells_upend/n_cells_total*100, 2)
+
+    # # plot responses relative to onset/offset
+    # gs_kw = dict(wspace=0.05)
+    # f, ax = plt.subplots(1, 2, figsize=(6, 6), gridspec_kw=gs_kw)
+    # ax[0].imshow(bird_feeder_responses[sort_idx, :n_timepoints//2], clim=[-1, 1], 
+    #              aspect='auto', cmap='bwr', interpolation='none')
+    # im1 = ax[1].imshow(bird_feeder_responses[sort_idx, n_timepoints//2:], clim=[-1, 1], 
+    #                     aspect='auto', cmap='bwr', interpolation='none')
+    # ylims = ax[0].get_ylim()
+
+    # # plot arrival/departure
+    # ax[0].vlines(t_pre, 0, n_cells_total, colors='k', linestyles='dashed', lw=0.5)
+    # ax[1].vlines(t_end, 0, n_cells_total, colors='k', linestyles='dashed', lw=0.5)
+    # ax[0].set_ylim(ylims)
+    # ax[1].set_ylim(ylims)
+
+    # # axis labels
+    # ax[0].set_xlabel('time from arrival (sec)')
+    # ax[1].set_xlabel('time from departure (sec)')
+    # ax[0].set_ylabel('cells sorted by activity around departure')
+    # ax[1].set_yticks([])
+    # ax[1].tick_params(labelleft=False)
+    # ax[0].set_title(fr"{n_cells_upstart}/{n_cells_total} $\uparrow$ approach", fontsize=axis_label)
+    # ax[1].set_title(fr"{n_cells_upend}/{n_cells_total} $\uparrow$ departure", fontsize=axis_label)
+    # f.suptitle(f'all feeder-aligned responses for {bird}', y=0.95, fontsize=title_size)
+
+    # # ticks
+    # ax[0].set_xticks(np.arange(0, t_pre+t_begin+1/dt, 1/dt))
+    # ax[1].set_xticks(np.arange(0, t_post+t_end+1/dt, 1/dt))
+    # ax0_labels = (np.arange(-t_pre, t_begin+1/dt, 1/dt))*dt
+    # ax1_labels = (np.arange(-t_end, t_post+1/dt, 1/dt))*dt
+    # ax[0].set_xticklabels(ax0_labels.astype(int))
+    # ax[1].set_xticklabels(ax1_labels.astype(int))
+
+    # # add a colorbar
+    # cax = f.add_axes([0.93, 0.62, 0.02, 0.22]) # [left, bottom, width, height]
+    # cbar = f.colorbar(im1, cax=cax, orientation='vertical')
+    # cbar.set_label('activity (z-score)', fontsize=tick_label)
+    # cbar.set_ticks([])
+    # cbar.ax.text(0.5, -0.05, '-1 std', transform=cbar.ax.transAxes,
+    #                 ha='center', va='top', fontsize=tick_label)
+    # cbar.ax.text(0.5, 1.02, '1 std', transform=cbar.ax.transAxes,
+    #                 ha='center', va='bottom', fontsize=tick_label)
+
+    # f.savefig(f'{save_figs}/{bird}_feeder_tuning_endsort.png', dpi=400, bbox_inches='tight')
 
     ''' Plot for bird across all sessions - sorted by activity during '''
     during_response = np.sum(bird_feeder_responses[:, t_pre:t_end+t_begin+t_pre],  axis=1)/(t_begin+t_end)
@@ -342,11 +486,14 @@ for bird in bird_ids:
 
 
     ''' Plot for bird across all sessions - sorted by activity at end '''
-    end_start_fr = 5
-    end_end_fr = 15
+    # get the offset-aligned average activity for a given window
+    end_start_fr = offset_window[bird][0]
+    end_end_fr = offset_window[bird][1]
     end_start_idx = t_begin+t_pre+t_end-end_start_fr
     end_end_idx = t_begin+t_pre+t_end+end_end_fr
-    end_response = np.sum(bird_feeder_responses[:, end_start_idx:end_end_idx],  axis=1)/(t_begin+t_end)
+    n_frames_offset = end_end_idx-end_start_idx
+    end_response = np.sum(bird_feeder_responses[:, end_start_idx:end_end_idx],  axis=1)/(n_frames_offset)
+
     sort_idx = np.argsort(end_response)
     pct_upstart = np.round(n_cells_upstart/n_cells_total*100, 2)
     pct_upend = np.round(n_cells_upend/n_cells_total*100, 2)
@@ -394,5 +541,4 @@ for bird in bird_ids:
     cbar.ax.text(0.5, 1.02, '1 std', transform=cbar.ax.transAxes,
                     ha='center', va='bottom', fontsize=tick_label)
 
-    f.savefig(f'{save_figs}/{bird}_feeder_tuning_altsort.png', dpi=400, bbox_inches='tight')
-
+    f.savefig(f'{save_figs}/{bird}_feeder_tuning_endsort.png', dpi=400, bbox_inches='tight')
