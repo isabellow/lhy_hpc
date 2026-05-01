@@ -6,6 +6,8 @@ import sys
 sys.path.append("../utils/")
 import load_matlab_data
 import helpers
+sys.path.append("..//neural/")
+from format_waveform_data import get_spike_times, load_wf_data, sort_wf_by_channel
 
 import scipy.io
 import os
@@ -165,3 +167,131 @@ def highpass(x, highcut, fs, order=5, axis=-1, kind='butter'):
     else:
         raise ValueError("Filter kind not recognized.")
     return filtfilt(b, a, x, axis=axis)
+
+
+''' To sort/filter cells by stim responsiveness '''
+def idx_cells_by_stim(data_dict, bird, session_id):
+    '''
+    Given stim responsive channels for a bird/session,
+    return whether each cell is on or surrounded by stim-responsive channels
+    (i.e., in the projection nucleus)
+
+    Also outputs which shank each cell is on for convenience
+    '''
+    # index cells by stim responsive channels
+    stim_idx_ch = data_dict[bird][session_id]['stim_resp_idx_ch']
+    if bird == 'RBY94':
+        # get the file paths
+        root_dir = "Z:/Isabel/data/hpc_implants/"
+        session_dir = f"{root_dir}{bird}/{bird}_{session_id}/"
+        ephys_id = data_dict[bird][session_id]['ephys_id']
+        ephys_folder= f"{root_dir}{bird}/{bird}_{session_id}/{bird}_{ephys_id}/"
+        for folder in sorted(os.listdir(ephys_folder)):
+            if 'kilosort4' in folder:
+                for file in sorted(os.listdir(f"{ephys_folder}{folder}")):
+                    if 'waveformStruct' in file:
+                        ks_dir = f"{bird}_{ephys_id}/{folder}/"
+        ephys_dir = f"{session_dir}{bird}_{ephys_id}/raw_ephys_output/"
+
+        # get the channel indices for each cell
+        waveform_struct = load_wf_data(session_dir, ks_dir=ks_dir)
+        _, wf_channels, _, ch_names = sort_wf_by_channel('', waveform_struct,
+                                                            data_dir=ephys_dir,
+                                                            return_ch_names=True)
+        wf_ch_idx = np.asarray([ch_names.index(ch) for ch in wf_channels])
+        ch_pos_probe = np.load(f"{session_dir}{ks_dir}channel_positions.npy")       
+
+        # determine if there's a stim response on each cell's channel
+        n_cells = wf_ch_idx.shape[0]
+        stim_idx_cell = np.zeros(n_cells).astype(bool)
+        for cell_idx, ch_idx in enumerate(wf_ch_idx):
+            stim_idx_cell[cell_idx] = stim_idx_ch[ch_idx]
+    else:
+        # get the positions of stim responsive channels
+        ch_pos = data_dict[bird][session_id]['channel_pos']
+        stim_pos = ch_pos[stim_idx_ch]
+
+        # match each cell to its channel position
+        cell_pos = data_dict[bird][session_id]['cell_pos']
+        n_cells = cell_pos.shape[0]
+        stim_idx_cell = np.zeros(n_cells).astype(bool)
+        for cell_idx, this_pos in enumerate(cell_pos):
+            stim_idx_cell[cell_idx] = np.any(np.all(stim_pos == this_pos, axis=1))
+
+    return stim_idx_cell
+
+def chunk_cells_by_region(data_dict, bird, session_id):
+    '''
+    Index cells by location in the brain
+
+    1 = putative projection nucleus
+    0 = put. DL (dorsal/lateral)
+    2 = put. ventral subiculum/SESN/DMZ (ventral/medial)
+    '''
+    if bird == 'RBY94':
+        # get the file paths
+        root_dir = "Z:/Isabel/data/hpc_implants/"
+        session_dir = f"{root_dir}{bird}/{bird}_{session_id}/"
+        ephys_id = data_dict[bird][session_id]['ephys_id']
+        ephys_folder= f"{root_dir}{bird}/{bird}_{session_id}/{bird}_{ephys_id}/"
+        for folder in sorted(os.listdir(ephys_folder)):
+            if 'kilosort4' in folder:
+                for file in sorted(os.listdir(f"{ephys_folder}{folder}")):
+                    if 'waveformStruct' in file:
+                        ks_dir = f"{bird}_{ephys_id}/{folder}/"
+        ephys_dir = f"{session_dir}{bird}_{ephys_id}/raw_ephys_output/"
+
+        # get the channel indices for each cell
+        waveform_struct = load_wf_data(session_dir, ks_dir=ks_dir)
+        _, wf_channels, _, ch_names = sort_wf_by_channel('', waveform_struct,
+                                                            data_dir=ephys_dir,
+                                                            return_ch_names=True)
+        wf_ch_idx = np.asarray([ch_names.index(ch) for ch in wf_channels])
+        ch_pos_probe = np.load(f"{session_dir}{ks_dir}channel_positions.npy")       
+
+        # determine if there's a stim response on each cell's channel
+        n_cells = wf_ch_idx.shape[0]
+        cell_dv = np.zeros(n_cells)
+        cell_ap = np.zeros(n_cells)
+        for cell_idx, ch_idx in enumerate(wf_ch_idx):
+            # save the depth and ap position for each cell
+            cell_dv[cell_idx] = ch_pos_probe[ch_idx, -1]
+            cell_ap[cell_idx] = ch_pos_probe[ch_idx, 0]
+
+        # get the shank index
+        A_idx = cell_ap < 100
+        B_idx = cell_ap >= 100
+    else:
+        # get each cell depth and shank
+        cell_pos = data_dict[bird][session_id]['cell_pos']
+        n_cells = cell_pos.shape[0]
+        cell_dv = cell_pos[:, -1]
+        _, ap_idx = np.unique(cell_pos[:, 1], return_inverse=True)
+        A_idx = ap_idx >= 3
+        B_idx = ap_idx < 3
+
+    # situate each cell in the projection nucleus or neighboring regions
+    nucleus_dvs = data_dict[bird][session_id]['nucleus_dvs']
+    A_nuc_lims = nucleus_dvs[0]
+    B_nuc_lims = nucleus_dvs[1]
+
+    DL_idx = np.zeros(n_cells).astype(bool)
+    DL_idx[A_idx] = cell_dv[A_idx] < A_nuc_lims[0]
+    DL_idx[B_idx] = cell_dv[B_idx] < B_nuc_lims[0]
+
+    DMZ_idx = np.zeros(n_cells).astype(bool)
+    DMZ_idx[A_idx] = cell_dv[A_idx] > A_nuc_lims[1]
+    DMZ_idx[B_idx] = cell_dv[B_idx] > B_nuc_lims[1]
+
+    if bird == 'RBY94': # likely entire B shank was medial of the nucleus - TODO confirm this if possible with waveform props
+        DMZ_idx[B_idx] = True
+        DL_idx[B_idx] = False
+
+    proj_idx = np.abs((DL_idx + DMZ_idx) - 1).astype(bool)
+
+    cell_loc_idx = np.full(n_cells, np.nan)
+    cell_loc_idx[DL_idx] = 0
+    cell_loc_idx[proj_idx] = 1
+    cell_loc_idx[DMZ_idx] = 2
+
+    return cell_loc_idx

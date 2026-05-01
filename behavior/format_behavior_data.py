@@ -1,4 +1,5 @@
 import numpy as np
+from scipy import stats
 import pandas as pd
 import sys
 sys.path.append("../utils/")
@@ -89,6 +90,68 @@ def get_caches_refined(count_data, seed_struct, n_total_frames, dt=0.02):
 
     return cache_onsets.astype(int), cache_offsets.astype(int), cache_perch_idx.astype(int)
 
+def get_retrievals_refined(count_data, seed_struct, n_total_frames, dt=0.02):
+    '''
+    Retrievals are site interactions where a seed is removed
+
+    Returns retrieval onset and offset times, 
+    as well as the perch ID for each retrieval
+    
+    Define a retrieval window as in SC, EM 2024
+    - 250 ms before retrieval onset to 250 ms after retrieval offset
+    - truncated to avoid other interactions
+    - retrievals > 2 sec, only include 1 sec after onset and 1 sec before offset
+    '''
+    # get all site interactions
+    all_int_start = count_data['newSite']
+    all_int_end = count_data['endSite']
+    all_site_idx = count_data['siteNum']
+    all_int_changes = np.sum(seed_struct['seedChanges'], axis=1)
+    n_interactions = all_int_start.shape[0]
+
+    # retrievals = remove a seed
+    ret_onsets_raw = all_int_start[all_int_changes < 0]
+    ret_offsets_raw = all_int_end[all_int_changes < 0]
+    ret_perch_idx = all_site_idx[all_int_changes < 0]
+
+    # get all perch interactions
+    all_perch_start = count_data['newPerch']
+    all_perch_end = count_data['endPerch']
+    n_perches = all_perch_start.shape[0]
+
+    # +/-240 ms window around retrieval, avoiding other events
+    t_window = 0.25/dt
+    ret_onsets = np.asarray([])
+    ret_offsets = np.asarray([])
+    for cs, ce in zip(ret_onsets_raw, ret_offsets_raw):
+        # create the time window
+        ret_start = cs - t_window
+        ret_end = ce + t_window
+
+        # get the perch index for this retrieval event
+        temp_perch_start = all_perch_start.copy()
+        temp_perch_start[temp_perch_start > cs] = 0
+        ret_idx = np.argmin(cs-temp_perch_start)
+
+        # check for overlap with other events
+        if ret_idx > 0:
+            if all_perch_end[ret_idx-1] >= ret_start:
+                ret_start = all_perch_end[ret_idx-1]
+        if ret_idx < n_perches-1:
+            if all_perch_start[ret_idx+1] <= ret_end:
+                ret_end = all_perch_start[ret_idx+1]
+
+        # check session ends
+        if ret_start < 0:
+            ret_start = 0
+        if ret_end > n_total_frames:
+            ret_end = n_total_frames
+
+        ret_onsets = np.append(ret_onsets, ret_start)
+        ret_offsets = np.append(ret_offsets, ret_end)
+
+    return ret_onsets.astype(int), ret_offsets.astype(int), ret_perch_idx.astype(int)
+
 def get_visits_raw(count_data):
     '''
     Visits are perch interactions without eating or site interaction
@@ -178,6 +241,46 @@ def get_visits_refined(count_data, n_total_frames, dt=0.02):
             visit_offsets = np.append(visit_offsets, visit_end)
 
     return visit_onsets.astype(int), visit_offsets.astype(int), all_perch_idx[visits].astype(int)
+
+
+def get_n_seeds(seed_struct):
+    '''
+    Get the number of seeds in the arena (roughly n cached seeds)
+    at the time of each interaction
+    '''
+    count_data = seed_struct['countData']
+    n_init = np.sum(seed_struct['initSeedCounts'])
+    all_int_changes = np.sum(seed_struct['seedChanges'], axis=1)
+    all_int_start = count_data['newSite']
+    n_seeds_arena = np.cumsum(all_int_changes) + n_init
+    if all_int_start[0] > 0:
+        n_seeds_arena = np.insert(n_seeds_arena, 0, n_init)
+    return n_seeds_arena
+
+
+
+def dist_binned_mean_sem(vector_correlations, vector_distances, distance_bin_edges):
+    '''
+    Given correlations and distances, process the data and
+    return distance-binned means and SEMs
+    '''
+    n_bins = int(distance_bin_edges.shape[0] - 1)
+
+    # remove nans
+    keep_idx = np.abs(np.isnan(vector_correlations)-1).astype(bool)
+    vector_correlations = vector_correlations[keep_idx]
+    vector_distances = vector_distances[keep_idx]
+
+    # compute the average and sem
+    dist_bin_idx = np.digitize(vector_distances, distance_bin_edges)-1
+    avg_correlations = np.zeros(n_bins)
+    sem_correlations = np.zeros(n_bins)
+    for b_idx in range(n_bins):
+        avg_correlations[b_idx] = np.mean(vector_correlations[dist_bin_idx==b_idx])
+        sem_correlations[b_idx] = stats.sem(vector_correlations[dist_bin_idx==b_idx]) 
+
+    return  avg_correlations, sem_correlations
+
 
 
 ''' Classify feeder interactions '''

@@ -64,6 +64,9 @@ for bird in bird_ids:
                             ephys_dir = f"{session_dir}{bird}_{ephys_id}/raw_ephys_output/"
                             stim_sessions.append(f'{bird}_{session_id}')
                             ephys_dirs.append(ephys_dir)
+                            for sub_file in sorted(os.listdir(f"{session_dir}{bird}_{ephys_id}/{file}")):
+                                if 'waveformStruct' in sub_file:
+                                    ks_dir = f"{bird}_{ephys_id}/{file}/"
 
 
 '''
@@ -137,6 +140,72 @@ for bird in bird_ids:
             if all_sig_cells.shape[0] > 0:
                 data_dict[bird][session_id]['proj_cell_IDs'] = all_sig_cells.astype(int)
                 data_dict[bird][session_id]['proj_cell_idx'] = all_sig_idx.astype(int)
+
+''' Save the stim response indices and rough nucleus boundaries '''
+for bird in bird_ids:
+    print(f'\napproximating projection nucleus location for {bird}')
+    session_list = data_dict[bird]['all_sessions']
+    bird_nucleus_dvs = np.full((len(session_list), 2, 2), np.nan)
+    for i, session_id in enumerate(session_list):
+        if f'{bird}_{session_id}' in stim_sessions:
+            # get the stim index
+            stim_idx = data_dict[bird][session_id]['worm_ch_idx']
+
+            # get the channel positions
+            n_channels = stim_idx.shape[0]
+            if bird == 'RBY94':
+                # no hisotolgy, just use position on the probe
+                ch_pos = np.load(f"{session_dir}{ks_dir}channel_positions.npy")
+            else:
+                ch_pos = data_dict[bird][session_id]['channel_pos']
+            
+            # keep channels that are surrounded by stim responsive channels
+            shank_idx = n_channels//2
+            stim_idx_adj = np.zeros(n_channels).astype(bool)
+            for ch in range(n_channels):
+                if stim_idx[ch]:
+                    stim_idx_adj[ch] = True
+                    continue
+                elif ch < shank_idx:
+                    dorsal_resp = np.any(stim_idx[:ch])
+                    ventral_resp = np.any(stim_idx[ch+1:shank_idx])
+                elif ch >= shank_idx:
+                    dorsal_resp = np.any(stim_idx[shank_idx:ch])
+                    ventral_resp = np.any(stim_idx[ch+1:])                   
+                if dorsal_resp & ventral_resp:
+                    stim_idx_adj[ch] = True
+            stim_idx = stim_idx_adj
+
+            # get the min/max depth for stim responses
+            shank_A_idx = np.zeros(n_channels).astype(bool)
+            shank_A_idx[:shank_idx] = True
+            shank_A_stim = stim_idx & shank_A_idx
+            shank_B_stim = stim_idx & np.abs(shank_A_idx - 1).astype(bool)
+            shank_A_dv = ch_pos[shank_A_stim, -1]
+            shank_B_dv = ch_pos[shank_B_stim, -1]
+
+            # store for this session
+            nucleus_dvs = np.full((2, 2), np.nan)
+            if shank_A_dv.shape[0] > 0:
+                nucleus_dvs[0, 0] = np.min(shank_A_dv)
+                nucleus_dvs[0, 1] = np.max(shank_A_dv)
+            if shank_B_dv.shape[0] > 0:
+                nucleus_dvs[1, 0] = np.min(shank_B_dv)
+                nucleus_dvs[1, 1] = np.max(shank_B_dv)
+            bird_nucleus_dvs[i] = nucleus_dvs
+
+            # save the data
+            data_dict[bird][session_id]['stim_resp_idx_ch'] = stim_idx
+            data_dict[bird][session_id]['nucleus_dvs'] = nucleus_dvs
+
+    # get the min/max nucleus boundary depths for this bird
+    nucleus_dvs_all = np.full((2, 2), np.nan)
+    nucleus_dvs_all[0, 0] = np.nanmin(bird_nucleus_dvs[:, 0, 0])
+    nucleus_dvs_all[0, 1] = np.nanmax(bird_nucleus_dvs[:, 0, 1])
+    nucleus_dvs_all[1, 0] = np.nanmin(bird_nucleus_dvs[:, 1, 0])
+    nucleus_dvs_all[1, 1] = np.nanmax(bird_nucleus_dvs[:, 1, 1])
+    data_dict[bird]['nucleus_dvs'] = nucleus_dvs_all
+
 
 # save the updated dictionary
 np.save(data_file, data_dict)

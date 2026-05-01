@@ -15,14 +15,14 @@ def plot_wf_clusters(asymm, width, log_fr, clu1_idx, clu2_idx):
                width[clu1_idx],
                log_fr[clu1_idx],
                c='xkcd:scarlet',
-               alpha=0.4, lw=0, s=15, zorder=0)
+               alpha=0.4, lw=0, s=15, zorder=1)
 
     # all inhibitory cells
     ax.scatter(asymm[clu2_idx],
                width[clu2_idx],
                log_fr[clu2_idx],
                c='xkcd:cobalt blue', 
-               alpha=0.4, lw=0, s=10, zorder=0)
+               alpha=0.4, lw=0, s=15, zorder=1)
 
     # labels
     ax.set_xlabel('spike asymmetry')
@@ -247,3 +247,164 @@ def add_bird_labels(fig, ax, bird_shank_list, insertion_coords):
                 # transform_rotates_text=False
                 )
     return fig, ax
+
+
+
+def plot_width_by_depth(bird_ids, pos_dict, log_fr, exc_idx, inhb_idx):
+    '''
+    TODO finish functionalizing/generalizing this
+
+    Params
+    ------
+    bird_ids
+    pos_dict : dict of cell info for each bird
+        waveform_props : ndarray, shape (3, n_cells)
+            asymm, width, log firing rate
+        cell_pos : ndarry, shape (3, n_cells)
+            ML, AP, DV
+    log_fr : ndarray, (n_cells_total)
+        log firing rates for all cells across all birds/sessions
+    '''
+    # data params
+    n_birds = len(bird_ids)-1
+    n_shanks = n_birds*2
+
+    # fig params
+    gs_kw = dict(hspace=0.1, wspace=0.3)
+    f, ax = plt.subplots(2, n_shanks, figsize=(10, 10),
+                         sharey=True, gridspec_kw=gs_kw)
+    title_size = 14
+    axis_label = 12
+    tick_label = 9
+
+    # data params
+    exc_vmax = np.nanmax(log_fr[exc_idx])
+    exc_vmin = np.nanmin(log_fr[exc_idx])
+    inhb_vmax = np.nanmax(log_fr[inhb_idx])
+    inhb_vmin = np.nanmin(log_fr[inhb_idx])
+
+    cell_idx_start = 0
+    i = 0
+    for bird in bird_ids:
+        if bird == 'RBY94':
+            continue
+            
+        # waveform properties
+        wf_width = pos_dict[bird]['waveform_props'][1]
+        cell_fr = pos_dict[bird]['waveform_props'][2]
+        n_cells = wf_width.shape[0]
+
+        # positions
+        cell_pos = pos_dict[bird]['cell_pos']
+        cell_dv = cell_pos[:, -1]
+        _, ap_idx = np.unique(cell_pos[:, 1], return_inverse=True)
+        B_idx = ap_idx < 3
+        A_idx = ap_idx >= 3
+
+        # cluster indices
+        cell_idx_end = cell_idx_start + n_cells
+        exc_cells = exc_idx[cell_idx_start:cell_idx_end]
+        inhb_cells = inhb_idx[cell_idx_start:cell_idx_end]
+
+        # index by shank and cluster
+        B_excite = B_idx & exc_cells
+        B_inhib = B_idx & inhb_cells
+        A_excite = A_idx & exc_cells
+        A_inhib = A_idx & inhb_cells
+
+        # subplot indices
+        B_ax = ap_sort_idx[i]
+        A_ax = ap_sort_idx[i+1]
+
+        # jitter
+        jit = np.random.randn(n_cells)*2
+
+        # highlight the excitatory cells
+        sc_exc = ax[0, B_ax].scatter(wf_width[B_excite],
+                                     cell_dv[B_excite] + jit[B_excite],
+                                     c=cell_fr[B_excite], cmap='viridis',
+                                     vmin=exc_vmin, vmax=exc_vmax,
+                                     s=10, lw=0, zorder=1, alpha=0.7)
+        ax[0, B_ax].scatter(wf_width[B_inhib],
+                            cell_dv[B_inhib] + jit[B_inhib], 
+                            c='xkcd:gray', 
+                            s=10, lw=0, zorder=0, alpha=0.2)
+        ax[0, B_ax].vlines(0.5, -50, 610, colors='xkcd:gray', linestyles='dashed', lw=0.5)
+        ax[0, A_ax].scatter(wf_width[A_excite], 
+                            cell_dv[A_excite] + jit[A_excite],
+                            c=cell_fr[A_excite], cmap='viridis', 
+                            vmin=exc_vmin, vmax=exc_vmax,
+                            s=10, lw=0, zorder=1, alpha=0.7)
+        ax[0, A_ax].scatter(wf_width[A_inhib],
+                            cell_dv[A_inhib] + jit[A_inhib], 
+                            c='xkcd:gray', 
+                            s=10, lw=0, zorder=0, alpha=0.2)
+        ax[0, A_ax].vlines(0.5, -50, 610, colors='xkcd:gray', linestyles='dashed', lw=0.5)
+
+        # highlight the inhibitory cells
+        ax[1, B_ax].scatter(wf_width[B_excite], 
+                            cell_dv[B_excite] + jit[B_excite],
+                            c='xkcd:gray', 
+                            s=10, lw=0, zorder=0, alpha=0.2)
+        sc_inhb = ax[1, B_ax].scatter(wf_width[B_inhib],
+                                      cell_dv[B_inhib] + jit[B_inhib],
+                                      c=cell_fr[B_inhib], cmap='viridis', 
+                                      vmin=inhb_vmin, vmax=inhb_vmax,
+                                      s=10, lw=0, zorder=1, alpha=0.7)
+        ax[1, B_ax].vlines(0.5, -50, 610, colors='xkcd:gray', linestyles='dashed', lw=0.5)
+        ax[1, A_ax].scatter(wf_width[A_excite], 
+                            cell_dv[A_excite] + jit[A_excite],
+                            c='xkcd:gray', 
+                            s=10, lw=0, zorder=0, alpha=0.2)
+        ax[1, A_ax].scatter(wf_width[A_inhib],
+                            cell_dv[A_inhib] + jit[A_inhib], 
+                            c=cell_fr[A_inhib], cmap='viridis', 
+                            vmin=inhb_vmin, vmax=inhb_vmax,
+                            s=10, lw=0, zorder=1, alpha=0.7)
+        ax[1, A_ax].vlines(0.5, -50, 610, colors='xkcd:gray', linestyles='dashed', lw=0.5)
+        
+        # titles
+        ax[0, A_ax].set_title(f'{bird}', fontsize=axis_label)
+        ax[0, B_ax].set_title(f'{bird}', fontsize=axis_label)
+        
+
+        # format axes
+        for j in range(2):
+            for sh in [B_ax, A_ax]:
+                ax[j, sh].set_xlim(0, 1)
+                ax[j, sh].spines['right'].set_visible(False)
+                ax[j, sh].spines['top'].set_visible(False)
+                ax[j, sh].spines['bottom'].set_bounds(0, 1)
+                ax[j, sh].spines['left'].set_bounds(600, 0)
+                ax[j, sh].set_xticks([0, 0.5, 1])
+                ax[j, sh].set_xticklabels(['0', '0.5', '1'])
+
+        # update indices
+        i += 2
+        cell_idx_start = cell_idx_end
+
+    # universal formatting
+    ax[0, 0].set_ylim([610, -90]) 
+    ax[0, 0].set_ylabel('excitatory cells\ndepth (um)', fontsize=axis_label)
+    ax[1, 0].set_ylabel('inhibitory cells\ndepth (um)', fontsize=axis_label)
+    f.supxlabel('spike width (ms)', fontsize=axis_label, y=0.06)
+    f.suptitle(r"shanks sorted posterior $\rightarrow$ anterior", fontsize=axis_label, y=0.93)
+
+    # colorbars
+    cax = f.add_axes([0.93, 0.8, 0.008, 0.1])
+    cbar = f.colorbar(sc_exc, cax=cax)
+    cbar.set_label('log firing rate')
+    max_fr = np.round(exc_vmax, 1)
+    min_fr = np.round(exc_vmin, 1)
+    cbar.set_ticks([sc_exc.norm.vmin, sc_exc.norm.vmax])
+    cbar.set_ticklabels([rf'$10^{{{min_fr}}}$', rf'$10^{{{max_fr}}}$'])
+
+    cax = f.add_axes([0.93, 0.37, 0.008, 0.1])
+    cbar = f.colorbar(sc_inhb, cax=cax)
+    cbar.set_label('log firing rate')
+    max_fr = np.round(inhb_vmax, 1)
+    min_fr = np.round(inhb_vmin, 1)
+    cbar.set_ticks([sc_inhb.norm.vmin, sc_inhb.norm.vmax])
+    cbar.set_ticklabels([rf'$10^{{{min_fr}}}$', rf'$10^{{{max_fr}}}$'])
+
+    return f, ax
