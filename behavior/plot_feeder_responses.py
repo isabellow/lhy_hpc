@@ -8,7 +8,7 @@ import color_utils
 from load_matlab_data import loadmat_sbx
 sys.path.append("..//neural/")
 from format_waveform_data import get_spike_times
-from format_behavior_data import load_behavior_data, get_feeder_ints, get_feeder_periods, classify_feeder_ints
+from format_behavior_data import load_behavior_data, get_feeder_ints, get_feeder_periods, classify_feeder_ints, get_feeder_departure_bounds, get_foot_angle
 
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter1d
@@ -37,14 +37,19 @@ root_dir = "Z:/Isabel/data/hpc_implants/"
 save_figs_dir = f"../figures/basic_neural_analysis/"
 data_file = f"{root_dir}stim_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
+posture_file = 'posture_pos_smooth.npy'
 
 ''' Thresholding params '''
 # multiplicative/divisive factors
 firing_up = 2 # >= considered elevated firing rate
 firing_down = 2 # <= considered reduced firing rate
 
+# angle between foot vectors for leaving the feeder
+align_to_feet = True
+angle_thresh = 20 # degrees
+
 ''' Data params '''
-bird = 'AMB154' # update as needed
+bird = 'RBY94' # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
 
@@ -61,7 +66,7 @@ if os.path.isdir(save_dir):
     print('save directory exists')
 else:
     os.mkdir(save_dir)
-save_folder = f"{save_dir}/feeder_responses/"
+save_folder = f"{save_dir}/feeder_responses_align_feet/"
 if os.path.isdir(save_folder):
     print('save folder exists')
 else:
@@ -129,6 +134,15 @@ for session_id in behavior_sessions:
 
     # get the feeder interactions + classify as open/closed
     feeder_int_start, feeder_int_end, feeder_idx = get_feeder_ints(count_data, use_beak=False)
+    if align_to_feet:
+        feet_angle = get_foot_angle(data_dir, posture_file)
+        feeder_depart_start, feeder_depart_end, feeder_idx = get_feeder_departure_bounds(count_data)
+        assert feeder_int_end.shape[0] == feeder_depart_end.shape[0]
+        for f_idx, (start_t, end_t) in enumerate(zip(feeder_depart_start, feeder_depart_end)):
+            these_angles = np.degrees(feet_angle[start_t:end_t])
+            leave_idx = np.argmax(these_angles >= angle_thresh)
+            if np.sum(these_angles >= angle_thresh):
+                feeder_int_end[f_idx] = np.min([start_t+leave_idx, end_t])
     feeder_open_times, feeder_close_times = get_feeder_periods(session_info_file, bird, session_id)
     feeder_status = classify_feeder_ints(feeder_int_start, feeder_int_end, feeder_open_times, feeder_close_times)
     n_feeder_int = feeder_int_start.shape[0]
@@ -373,7 +387,6 @@ for session_id in behavior_sessions:
 
 
     ''' Plot feeder tuning for cells with firing rate modulations '''
-    # TODO not everything is plotting??
     # fig params
     feeder_colors = ['xkcd:saffron', 'green', 'xkcd:scarlet', 'blue', 'k', 
                      'xkcd:saffron', 'green', 'xkcd:scarlet', 'blue']

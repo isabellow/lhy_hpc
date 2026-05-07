@@ -13,6 +13,5 @@ Analysis as in Chettih, Mackevicius et al, 2024 Fig. 5
 Compare barcode-barcode correlations across different delta caches
 Compare barcode-retrieval correlations across different delta retrievals
 
-TODO - maybe won't make a big difference in my data?
 Compute the barcode by subtracting the smooth spatial component
 '''

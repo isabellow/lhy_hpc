@@ -16,9 +16,8 @@ Compute population vectors associated with different events as in Chettih, Macke
 
 Add to the data dictionary for future use.
 '''
-
 # Include only cells bounded by channels with stim response?
-proj_only = False
+proj_only = True
 subtract_baseline = True
 
 ''' File Paths '''
@@ -34,6 +33,9 @@ arena_items_file = 'arena_items_2.mat'
 
 
 ''' Data params '''
+# for grabbing activity around cache events
+long_thresh = 2 # seconds
+
 # for computing/binning distances between perches
 convert_norm_to_cm = 13 * 2.54 # conversion factor normalized coordinates to cm
 perch_dist_bins = np.asarray([0, 0.01, 0.25, 0.45, 0.62, 0.76, 0.92, 1.12, 1.29, np.inf])
@@ -52,7 +54,6 @@ for site in range(n_sites):
 # load the data dictionary and get bird ids
 data_dict = np.load(data_file, allow_pickle=True).item()
 bird_ids = []
-data_dict = np.load(data_file, allow_pickle=True).item()
 for bird in data_dict.keys():
     bird_ids.append(bird)
 
@@ -164,10 +165,9 @@ for bird in bird_ids:
 
         ''' Average neural activity during each cache '''
         # account for long caches as in SC, EM 2024
-        long_thresh = 2 # seconds
         long_window = int(long_thresh/2/dt) # frames
 
-        # get average activity during cache window
+        # get average activity during cache window & PSTH
         avg_cache = np.zeros((n_cells, n_caches))
         for i, (cache_on, cache_off) in enumerate(zip(cache_onsets, cache_offsets)):
             if cache_off - cache_on < long_thresh:
@@ -282,7 +282,7 @@ for bird in bird_ids:
             cache_vectors_raw = cache_vectors_raw[:, stim_idx_cell]
             ret_vectors_raw = ret_vectors_raw[:, stim_idx_cell]
 
-        ''' Optionally subtract the baseline fort each event type '''
+        ''' Optionally subtract the baseline for each event type '''
         if subtract_baseline:
             # compute avg population vectors for all events
             avg_visit_vector = np.mean(visit_vectors_raw, axis=0, keepdims=True)
@@ -304,7 +304,10 @@ for bird in bird_ids:
             retrieve_vectors = ret_vectors_raw[:, exc_idx]
 
         ''' Save data for future use '''
-        barcode_dict = {}
+        if 'barcode_dict' in data_dict[bird][session_id].keys():
+            barcode_dict = data_dict[bird][session_id]['barcode_dict']
+        else:
+            barcode_dict = {}
 
         barcode_dict['cache_vectors'] = cache_vectors
         barcode_dict['retrieve_vectors'] = retrieve_vectors
@@ -314,7 +317,7 @@ for bird in bird_ids:
         barcode_dict['retrieve_loc'] = ret_loc
         barcode_dict['visit_loc'] = visit_loc
 
-        barcode_dict['active_cache_frac'] = active_cache_frac
+        barcode_dict['active_cache_frac_proj'] = active_cache_frac
 
         data_dict[bird][session_id]['barcode_dict'] = barcode_dict
 

@@ -258,7 +258,7 @@ def get_n_seeds(seed_struct):
     return n_seeds_arena
 
 
-
+''' Barcode-related '''
 def dist_binned_mean_sem(vector_correlations, vector_distances, distance_bin_edges):
     '''
     Given correlations and distances, process the data and
@@ -281,6 +281,47 @@ def dist_binned_mean_sem(vector_correlations, vector_distances, distance_bin_edg
 
     return  avg_correlations, sem_correlations
 
+def spikes_by_cache(spike_frame, cache_onsets, cache_offsets, cache_window=20, dt=0.02):
+    '''
+    For cache offset aligned rasters, returns a matrix of spikes by cache
+    sorted by duration
+
+    cache_window : time in seconds to take around cache offset
+    '''
+    # params
+    n_cells = spike_frame.shape[0]
+    n_cache = cache_offsets.shape[0]
+    cache_t_points = np.arange(-cache_window//2, cache_window//2 + dt, dt)
+    n_t_pts = cache_t_points.shape[0]
+    fr_halfwidth = n_t_pts//2
+
+    # sort caches by duration
+    cache_dur = cache_offsets - cache_onsets
+    duration_idx = np.argsort(cache_dur)
+
+    # matrix of spike times by cache
+    cache_mat = np.zeros((n_cells, n_cache, n_t_pts), dtype=bool)
+    for c_idx in range(n_cells):
+        spk_times = spike_frame[c_idx]
+        for i, cache_idx in enumerate(duration_idx):  
+            start_idx = (cache_offsets[cache_idx] - fr_halfwidth).astype(int)
+            end_idx = (cache_offsets[cache_idx] + fr_halfwidth + 1).astype(int)
+            cache_mat[c_idx, i] = spk_times[start_idx:end_idx]
+
+    # save cache onset times for plotting
+    t_zero_idx = int(cache_window//2//dt + 1)
+    cache_ons = cache_t_points[t_zero_idx - cache_dur[duration_idx]]
+
+    return cache_mat, cache_t_points, cache_ons
+
+
+# def shuffle_cache_activity():
+#     '''
+#     1000 shuffled data points.
+
+#     To generate the shuffle distribution, circularly permute cache times relative to neural spike times.
+#     We used the 5th and 95th percentiles of the shuffled distribution to classify neurons as significantly suppressed or enhanced.
+#     '''
 
 
 ''' Classify feeder interactions '''
@@ -341,6 +382,78 @@ def get_feeder_ints(count_data, use_beak=True, frame_rate=50, feeder_perches=np.
         feeder_idx = np.asarray(feeder_idx)
 
     return feeder_int_start, feeder_int_end, feeder_idx
+
+def get_foot_angle(data_dir, posture_file):
+    # TODO why are some magnitudes coming out to zero?
+    # get a vector between the two feet
+    smooth_posture_preds = np.load(f'{data_dir}{posture_file}') # time x keypoints x xyz
+    feet_xy = smooth_posture_preds[:, [10, 14], :2]
+    feet_vector = feet_xy[:, 0] - feet_xy[:, 1]
+
+    # compute the angle between adjacent feet vectors
+    v1 = feet_vector[:-1]
+    v2 = feet_vector[1:]
+    mag_v1 = np.sqrt(v1[:, 0]**2 + v1[:, 1]**2)
+    mag_v2 = np.sqrt(v2[:, 0]**2 + v2[:, 1]**2)
+    dot = np.sum(v1*v2, axis=1)
+
+    # regularize
+    mag_v1[mag_v1 < 0.01] = 0.01
+    mag_v2[mag_v2 < 0.01] = 0.01
+    
+    cos_theta = dot / (mag_v1*mag_v2)
+    cos_theta[cos_theta < -1] = -1
+    cos_theta[cos_theta > 1] = 1
+
+    # compute the angle
+    feet_angle = np.arccos(cos_theta)
+    feet_angle = np.append(feet_angle, 0)
+    
+    return feet_angle
+
+def get_feeder_departure_bounds(count_data, feeder_perches=np.asarray([84, 85, 86, 87])):
+    ''' get feeder visits '''
+    # all perches
+    all_perch_start = count_data['newPerch']
+    all_perch_end = count_data['endPerch']
+    all_perch_idx = count_data['perchNum']
+    n_perches = all_perch_end.shape[0]
+    
+    # feeder departures
+    feeder_depart_start = []
+    feeder_depart_end = []
+    feeder_idx = []
+    for i, (ps, pe) in enumerate(zip(all_perch_start, all_perch_end)):
+        this_perch = all_perch_idx[i]
+        if this_perch in feeder_perches:
+            feeder_depart_start.append(ps)
+            feeder_depart_end.append(pe)
+            feeder_idx.append(np.where(feeder_perches==this_perch)[0][0] + 1)
+    feeder_depart_start = np.asarray(feeder_depart_start)
+    feeder_depart_end = np.asarray(feeder_depart_end)
+    feeder_idx = np.asarray(feeder_idx)
+    
+    ''' refine by beak on feeder (if relevant) '''
+    # last time the beak was near the feeder
+    end_beak_on_feeder = count_data['endFeeder']
+    for i, (fs, fe) in enumerate(zip(feeder_depart_start, feeder_depart_end)):
+        after_start = end_beak_on_feeder > fs
+        before_end = end_beak_on_feeder < fe
+        if any(after_start & before_end):
+            this_beak_end = np.argmax(np.cumsum(after_start & before_end))
+            feeder_depart_start[i] = end_beak_on_feeder[this_beak_end]
+    
+    ''' refine to exclude eating '''
+    eat_offsets = count_data['endBeakPerch']
+    for i, (fs, fe) in enumerate(zip(feeder_depart_start, feeder_depart_end)):
+        after_start = eat_offsets > fs
+        before_end = eat_offsets < fe
+        if any(after_start & before_end):
+            this_offset = np.argmax(np.cumsum(after_start & before_end))
+            feeder_depart_start[i] = eat_offsets[this_offset]
+    assert np.sum((feeder_depart_end - feeder_depart_start) < 0) == 0
+
+    return feeder_depart_start, feeder_depart_end, feeder_idx
 
 def get_feeder_periods(session_info_file, bird, session_id):
     '''
