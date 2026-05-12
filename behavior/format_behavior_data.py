@@ -182,7 +182,8 @@ def get_visits_raw(count_data):
 
     return visit_onsets, visit_offsets
 
-def get_visits_refined(count_data, n_total_frames, dt=0.02):
+def get_visits_refined(count_data, n_total_frames, dt=0.02,
+                        exclude_feeders=True, feeder_perches=np.asarray([84, 85, 86, 87])):
     '''
     Visits are perch interactions without eating or site interaction
 
@@ -191,6 +192,8 @@ def get_visits_refined(count_data, n_total_frames, dt=0.02):
 
     Define a visit window as in SC, EM 2024
     +/- 500 ms from perch arrival, truncated to avoid other interactions
+
+    TODO! remove feeder perches
     '''
     # get all perch interactions
     all_perch_start = count_data['newPerch']
@@ -211,7 +214,10 @@ def get_visits_refined(count_data, n_total_frames, dt=0.02):
     for i, (ps, pe) in enumerate(zip(all_perch_start, all_perch_end)):
         start_idx = all_non_visit_start > ps
         end_idx = all_non_visit_start < pe
-        if any(start_idx & end_idx):
+        this_perch = all_perch_idx[i]
+        if (this_perch in feeder_perches) & exclude_feeders:
+            visits[i] = False
+        elif any(start_idx & end_idx):
             visits[i] = False        
 
     # 1000ms window around visit onset, avoiding other events
@@ -325,7 +331,7 @@ def spikes_by_cache(spike_frame, cache_onsets, cache_offsets, cache_window=20, d
 
 
 ''' Classify feeder interactions '''
-def get_feeder_ints(count_data, use_beak=True, frame_rate=50, feeder_perches=np.asarray([84, 85, 86, 87])):
+def get_feeder_ints(count_data, use_beak=True, feeder_perches=np.asarray([84, 85, 86, 87])):
     '''
     Parses count_data to extract feeder interactions.
 
@@ -336,8 +342,6 @@ def get_feeder_ints(count_data, use_beak=True, frame_rate=50, feeder_perches=np.
     use_beak : bool
         if True, feeder interactions are defined by the beak near the feeder
         else, feeder interactions are defined by the feet on the feeder perch
-    frame_rate : int
-        behavioral video frame rate in Hz
     feeder_perches : array of ints
         feeder perch ID numbers (as defined in get_site_interactions.py)
 
@@ -484,7 +488,7 @@ def get_feeder_periods(session_info_file, bird, session_id):
 
 
 def classify_feeder_ints(feeder_int_start, feeder_int_end, 
-                            feeder_open_times, feeder_close_times):
+                            feeder_open_times, feeder_close_times, frame_rate=50):
     '''
     For each feeder interaction, was the feeder open or closed?
 
@@ -494,6 +498,8 @@ def classify_feeder_ints(feeder_int_start, feeder_int_end,
         feeder interaction start/end frame numbers
     feeder_open/close_times : array, shape (n_feeder_periods,)
         times in minutes that feeders opened/closed
+    frame_rate : int
+        video frames per second (default is 50Hz)
 
     Returns
     -------
@@ -505,8 +511,8 @@ def classify_feeder_ints(feeder_int_start, feeder_int_end,
     n_feeder_int = feeder_int_start.shape[0]
 
     # convert feeder times to frames
-    feeder_open_frames = feeder_open_times*60*50
-    feeder_close_frames = feeder_close_times*60*50
+    feeder_open_frames = feeder_open_times*60*frame_rate
+    feeder_close_frames = feeder_close_times*60*frame_rate
 
     # classify each interaction as open vs. closed
     feeder_status = np.full(n_feeder_int, 0)

@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 import sys
 sys.path.append("../utils/")
@@ -92,3 +93,27 @@ def get_spike_times(session_dir, ks_dir='kilosort4', only_good=True):
     spike_t = spike_t[spike_t >= 0]
     
     return good_clusters, spike_id, spike_t
+
+def pop_normalize(aligned_spikes, dt=0.02, std_reg=1e-2,baseline_window=30):
+    ''' Normalize activity for population analysis 
+    aligned_spikes : ndarray, shape (n_cells, n_frames)
+        number of spikes per behavior bin
+    '''
+    n_cells = aligned_spikes.shape[0]
+
+    # instantaneous firing rate
+    inst_firing_rate = aligned_spikes/dt
+
+    # divide by the standard deviation (regularize by adding std_reg)
+    st_dev_fr = stats.tstd(inst_firing_rate, axis=1) + std_reg
+    norm_fr = inst_firing_rate.copy()
+    for cell in range(n_cells):
+        norm_fr[cell] /= st_dev_fr[cell]
+
+    # get the baseline rate for each cell (running 30min avg activity)
+    moving_avg_fr = np.zeros_like(inst_firing_rate)
+    for cell in range(n_cells):
+        moving_avg_fr[cell] = helpers.moving_avg(norm_fr[cell], window=baseline_window)
+    norm_fr -= moving_avg_fr
+
+    return norm_fr
