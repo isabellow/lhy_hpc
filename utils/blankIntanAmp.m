@@ -113,12 +113,12 @@ for c = 1:nchannels
     blank_data(c, :) = smooth_data;
     
     % sanity check
-%     if c == 1 && show_plot
-%         hold on
-%         plot(raw_data_ch)
-%         plot(full_idx, interp_data)
-%         plot(blank_data(c, :))
-%     end
+    if c == 1 %&& show_plot
+        hold on
+        % plot(raw_data_ch)
+        % plot(full_idx, interp_data)
+        plot(blank_data(c, :))
+    end
 end
 
 % Replace in the original file
