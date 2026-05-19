@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.spatial import cKDTree
 
 import sys
 sys.path.append("../utils/")
@@ -117,3 +118,58 @@ def pop_normalize(aligned_spikes, dt=0.02, std_reg=1e-2,baseline_window=30):
     norm_fr -= moving_avg_fr
 
     return norm_fr
+
+def map_contacts_to_intan(probe, map_file_path):
+    '''
+    Given probe contact positions and a mapping file,
+    get the index mapping each probe contact to an Intan channel
+
+    probe_pos : ndarray, shape (n_contacts, 2)
+        XY positions of the probe contacts in microns
+    '''
+    # load the channel map
+    ch_map = pd.read_excel(map_file_path)
+    
+    # get the map channel positions
+    xpos = ch_map["xpos"].to_numpy()
+    ypos = ch_map["ypos"].to_numpy()
+    map_pos = np.column_stack([xpos, ypos])
+    if np.max(map_pos) < 1: # units are in mm
+        map_pos = map_pos*1000
+    n_channels = map_pos.shape[0]
+
+    # get the probe contact positions
+    probe_pos = probe.contact_positions
+    
+    # match using nearest neighbors
+    tree = cKDTree(map_pos)
+    distances, map_idx = tree.query(probe_pos, k=1)
+    assert np.max(distances) < 0.1
+    assert len(map_idx) == probe.get_contact_count()
+
+    # map intan channel index to probe contact
+    intan_ch_idx = ch_map["Intan channel"].to_numpy()
+    intan_ch_idx = intan_ch_idx[map_idx]
+    contact_sort = np.argsort(intan_ch_idx)
+    
+    # get custom channel names
+    ch_names_unsorted = []
+    shank_idx_unsorted = np.zeros(n_channels)
+    for j, i in enumerate(map_idx):
+        shank_id = str(ch_map["Shank Letter"][i])
+        shank_row = str(ch_map["Shank Row"][i])
+        shank_col = str(ch_map["Shank Column"][i])
+        if len(shank_row) == 1:
+            ch_names_unsorted.append(f"{shank_id}-0{shank_row}-{shank_col}")
+        else:
+            ch_names_unsorted.append(f"{shank_id}-{shank_row}-{shank_col}")
+        if map_pos[i, 0] > 100:
+            shank_idx_unsorted[j] = 1
+
+    # reorder
+    ch_names = []
+    for i in contact_sort:
+        ch_names.append(ch_names_unsorted[i])
+    shank_idx = shank_idx_unsorted[contact_sort]
+
+    return contact_sort, ch_names, shank_idx

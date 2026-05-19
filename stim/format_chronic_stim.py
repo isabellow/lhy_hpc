@@ -26,6 +26,15 @@ def load_stim(data_dir, stim_pol="neg", verbose=True):
         print(f'loaded {n_stim} stim events in {toc-tic} seconds')
     return ephys_data
 
+def load_all_stim_times(data_dir):
+    stim_times = np.asarray([])
+    for file in sorted(os.listdir(data_dir)):
+        if "stim_t" in file:
+            stim_t = np.load(f'{data_dir}{file}')
+            stim_t = np.squeeze(stim_t.astype(int))
+            stim_times = np.append(stim_times, stim_t)
+    return np.unique(stim_times).astype(int)
+
 def sort_stim_by_channel(data_dir, ephys_data):
     '''
     Sorts the stim data by the channel order specified in the Intan header.
