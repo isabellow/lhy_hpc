@@ -8,6 +8,9 @@ addpath(genpath('C:\Users\ilow1\Documents\code\lhy_hpc\utils\')) % functions to 
 root_dir = 'C:\Users\Isabel\Documents\data_temp\SLV132_250310\SLV132_250310_122522\';
 amp_file_name = 'amplifier_stim_blanked_short.dat';
 
+save_dir = fullfile(fileparts(root_dir),'raw_ephys_output'); 
+save_stimt_file = 'stim_t_all.npy';
+
 % Define the stim period (err on a little extra time)
 t_start = 1290; % start t in seconds
 t_duration = 1400; % duration in seconds
@@ -24,13 +27,23 @@ t_mask_duration = 20.5e-3; % if blanking hash
 stim_in = dig_data(2, :);
 n_samples = length(stim_in);
 
-% Get the indices defining the stim start times and account for the buffer
+% Get the indices defining the stim start/end times
 stim_start_idx = find(diff(stim_in) == 1) + 1;
-n_stim = length(stim_start_idx);
-mask_start_idx = round(stim_start_idx - buffer_samples);
+stim_end_idx = find(diff(stim_in) == -1) + 1;
 
-% Convert to seconds
+% Remove non-stim events (e.g. M8 turning on)
+stim_dur = stim_end_idx - stim_start_idx;
+stim_start_idx = stim_start_idx(stim_dur < 8);
+n_stim = length(stim_start_idx);
+
+% Account for buffer and convert to seconds
+mask_start_idx = round(stim_start_idx - buffer_samples);
 mask_start_times = (mask_start_idx/h.sample_rate) + t_start;
+
+%% Save all stim times for data processing
+% get the absolute stim sample indices
+stim_t = (stim_start_idx + (t_start*h.sample_rate))-1;
+writeNPY(stim_t, fullfile(save_dir, save_stimt_file));
 
 %% Overwrite the Intan data file to mask the stim periods
 fprintf('\n processing %d stim events \n', n_stim)
