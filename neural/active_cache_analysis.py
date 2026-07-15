@@ -518,6 +518,21 @@ ax[1, 0].hist(pct_active[inhib_idx_all & not_mod_idx],
 ax[0, 0].set_ylabel('N excitatory cells')
 ax[1, 0].set_ylabel('N inhibitory cells')
 ax[0, 0].set_title('all cells')
+ax[1, 0].set_ylim([0, 15])
+
+# add values
+n_excite = np.sum(exc_idx_all)
+n_inhib = np.sum(inhib_idx_all)
+pct_enhanced_ex = (np.sum(exc_idx_all & enh_idx) / n_excite)*100
+pct_enhanced_in = (np.sum(inhib_idx_all & enh_idx) / n_inhib)*100
+pct_suppressed_ex = (np.sum(exc_idx_all & sup_idx) / n_excite)*100
+pct_suppressed_in = (np.sum(inhib_idx_all & sup_idx) / n_inhib)*100
+ax[0, 0].text(0.98, 0.98,
+                f'dec. = {int(pct_suppressed_ex)}%\ninc. = {int(pct_enhanced_ex)}%',
+                transform=ax[0, 0].transAxes, ha='right', va='top', fontsize=8)
+ax[1, 0].text(0.98, 0.98,
+                f'inc. = {int(pct_suppressed_in)}%\ninc. = {int(pct_enhanced_in)}%',
+                transform=ax[1, 0].transAxes, ha='right', va='top', fontsize=8)
 
 # putative projection nucleus cells
 proj_idx = all_birds_cell_loc == 1
@@ -534,6 +549,21 @@ ax[1, 1].hist(pct_active[inhib_idx_all & proj_idx & enh_idx],
 ax[1, 1].hist(pct_active[inhib_idx_all & proj_idx & not_mod_idx],
                 bins=pct_active_bins, zorder=0, color='xkcd:gray')
 ax[0, 1].set_title('proj. nucleus')
+ax[1, 1].set_ylim([0, 10])
+
+# add values
+n_excite = np.sum(exc_idx_all & proj_idx)
+n_inhib = np.sum(inhib_idx_all & proj_idx)
+pct_enhanced_ex = (np.sum(exc_idx_all & enh_idx & proj_idx) / n_excite)*100
+pct_enhanced_in = (np.sum(inhib_idx_all & enh_idx & proj_idx) / n_inhib)*100
+pct_suppressed_ex = (np.sum(exc_idx_all & sup_idx & proj_idx) / n_excite)*100
+pct_suppressed_in = (np.sum(inhib_idx_all & sup_idx & proj_idx) / n_inhib)*100
+ax[0, 1].text(0.98, 0.98,
+                f'dec. = {int(pct_suppressed_ex)}%\ninc. = {int(pct_enhanced_ex)}%',
+                transform=ax[0, 1].transAxes, ha='right', va='top', fontsize=8)
+ax[1, 1].text(0.98, 0.98,
+                f'dec. = {int(pct_suppressed_in)}%\ninc. = {int(pct_enhanced_in)}%',
+                transform=ax[1, 1].transAxes, ha='right', va='top', fontsize=8)
 
 # putative DL cells
 DL_idx = all_birds_cell_loc == 0
@@ -549,7 +579,22 @@ ax[1, 2].hist(pct_active[inhib_idx_all & DL_idx & enh_idx],
                 bins=pct_active_bins, zorder=1, color='xkcd:orange')
 ax[1, 2].hist(pct_active[inhib_idx_all & DL_idx & not_mod_idx],
                 bins=pct_active_bins, zorder=0, color='xkcd:gray')
+ax[1, 2].set_ylim([0, 10])
 ax[0, 2].set_title('DL cells')
+
+# add values
+n_excite = np.sum(exc_idx_all & DL_idx)
+n_inhib = np.sum(inhib_idx_all & DL_idx)
+pct_enhanced_ex = (np.sum(exc_idx_all & enh_idx & DL_idx) / n_excite)*100
+pct_enhanced_in = (np.sum(inhib_idx_all & enh_idx & DL_idx) / n_inhib)*100
+pct_suppressed_ex = (np.sum(exc_idx_all & sup_idx & DL_idx) / n_excite)*100
+pct_suppressed_in = (np.sum(inhib_idx_all & sup_idx & DL_idx) / n_inhib)*100
+ax[0, 2].text(0.98, 0.98,
+                f'dec. = {int(pct_suppressed_ex)}%\ninc. = {int(pct_enhanced_ex)}%',
+                transform=ax[0, 2].transAxes, ha='right', va='top', fontsize=8)
+ax[1, 2].text(0.98, 0.98,
+                f'dec. = {int(pct_suppressed_in)}%\ninc. = {int(pct_enhanced_in)}%',
+                transform=ax[1, 2].transAxes, ha='right', va='top', fontsize=8)
 
 # putative DMZ cells
 DMZ_idx = all_birds_cell_loc == 2
@@ -565,9 +610,31 @@ ax[1, 3].hist(pct_active[inhib_idx_all & DMZ_idx & enh_idx],
                 bins=pct_active_bins, zorder=1, color='xkcd:orange')
 ax[1, 3].hist(pct_active[inhib_idx_all & DMZ_idx & not_mod_idx],
                 bins=pct_active_bins, zorder=0, color='xkcd:gray')
-ax[0, 3].set_title('DMZ/SESN/ETV?')
+ax[1, 3].set_ylim([0, 10])
+ax[0, 3].set_title('SESN/ETV/DMZ?')
+
+# add values
+n_excite = np.sum(exc_idx_all & DMZ_idx)
+n_inhib = np.sum(inhib_idx_all & DMZ_idx)
+pct_enhanced_ex = (np.sum(exc_idx_all & enh_idx & DMZ_idx) / n_excite)*100
+pct_enhanced_in = (np.sum(inhib_idx_all & enh_idx & DMZ_idx) / n_inhib)*100
+pct_suppressed_ex = (np.sum(exc_idx_all & sup_idx & DMZ_idx) / n_excite)*100
+pct_suppressed_in = (np.sum(inhib_idx_all & sup_idx & DMZ_idx) / n_inhib)*100
+ax[0, 3].text(0.98, 0.98,
+                f'dec. = {int(pct_suppressed_ex)}%\ninc. = {int(pct_enhanced_ex)}%',
+                transform=ax[0, 3].transAxes, ha='right', va='top', fontsize=8)
+ax[1, 3].text(0.98, 0.98,
+                f'dec. = {int(pct_suppressed_in)}%\ninc. = {int(pct_enhanced_in)}%',
+                transform=ax[1, 3].transAxes, ha='right', va='top', fontsize=8)
 
 f.supxlabel(f'% caches active')
+
+# TODO percentages are coming out wrong
+
+for j in range(4):
+    for i in range(2):
+        ax[i, j].spines['right'].set_visible(False)
+        ax[i, j].spines['top'].set_visible(False)
 
 f.savefig(f'{save_figs_dir}pct_caches_active.png', dpi=600, bbox_inches='tight')
 plt.show()

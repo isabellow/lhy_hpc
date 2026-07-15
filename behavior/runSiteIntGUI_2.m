@@ -7,7 +7,7 @@ close all
 addpath(genpath('C:\Users\ilow1\Documents\code\lhy_hpc\behavior\')) % GUI functions
 
 % root session directory
-sessionPath = 'Z:\Isabel\data\hpc_implants\RBY94\RBY94_241125\';
+sessionPath = 'Z:\Isabel\data\lhy_implants\LMN88\LMN88_260714\rec_2';
 cd(sessionPath),
 
 % cache locations and videos

@@ -54,7 +54,7 @@ align_to_feet = False
 angle_thresh = 20 # degrees
 
 ''' Data params '''
-bird = 'SLV132' # update as needed
+bird = 'RBY94' # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
 fps = 50 # Hz

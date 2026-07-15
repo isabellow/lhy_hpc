@@ -10,6 +10,8 @@ sys.path.append("..//behavior/")
 from format_behavior_data import load_behavior_data, get_caches_refined, get_visits_refined, get_retrievals_refined
 sys.path.append("..//utils/")
 import helpers
+sys.path.append("..//stim/")
+from format_chronic_stim import idx_cells_by_stim
 
 '''
 Compute population vectors associated with different events as in Chettih, Mackevicius et al, 2024
@@ -17,7 +19,7 @@ Compute population vectors associated with different events as in Chettih, Macke
 Add to the data dictionary for future use.
 '''
 # Include only cells bounded by channels with stim response?
-proj_only = True
+proj_only = False
 subtract_baseline = True
 
 ''' File Paths '''
@@ -233,51 +235,7 @@ for bird in bird_ids:
 
         ''' Optionally, only keep cells in the projection nucleus '''
         if proj_only:
-            # index cells by stim responsive channels
-            stim_idx_ch = data_dict[bird][session_id]['stim_resp_idx_ch']
-            if bird == 'RBY94':
-                # get the channel indices for each cell
-                ephys_dir = f"{session_dir}{bird}_{ephys_id}/raw_ephys_output/"
-                waveform_struct = load_wf_data(session_dir, ks_dir=ks_dir)
-                _, wf_channels, _, ch_names = sort_wf_by_channel('', waveform_struct,
-                                                                    data_dir=ephys_dir,
-                                                                    return_ch_names=True)
-                wf_ch_idx = np.asarray([ch_names.index(ch) for ch in wf_channels])
-                ch_pos_probe = np.load(f"{session_dir}{ks_dir}channel_positions.npy")       
-
-                # determine if there's a stim response on each cell's channel
-                stim_idx_cell = np.zeros(n_cells).astype(bool)
-                cell_dv = np.zeros(n_cells)
-                cell_ap = np.zeros(n_cells)
-                for cell_idx, ch_idx in enumerate(wf_ch_idx):
-                    stim_idx_cell[cell_idx] = stim_idx_ch[ch_idx]
-
-                    # save the depth on probe for each cell
-                    cell_dv[cell_idx] = ch_pos_probe[ch_idx, -1]
-
-                    # get the shank index for each cell
-                    cell_ap[cell_idx] = ch_pos_probe[ch_idx, 0]
-                A_idx = cell_ap < 100
-                B_idx = cell_ap >= 100
-            else:
-                # get the positions of stim responsive channels
-                ch_pos = data_dict[bird][session_id]['channel_pos']
-                stim_pos = ch_pos[stim_idx_ch]
-
-                # match each cell to its channel position
-                cell_pos = data_dict[bird][session_id]['cell_pos']
-                n_cells = cell_pos.shape[0]
-                stim_idx_cell = np.zeros(n_cells).astype(bool)
-                for cell_idx, this_pos in enumerate(cell_pos):
-                    stim_idx_cell[cell_idx] = np.any(np.all(stim_pos == this_pos, axis=1))
-                cell_dv = cell_pos[:, -1]
-
-                # get the shank index for each cell
-                _, ap_idx = np.unique(cell_pos[:, 1], return_inverse=True)
-                A_idx = ap_idx >= 3
-                B_idx = ap_idx < 3
-
-            # filter out non-stim cells
+            stim_idx_cell = idx_cells_by_stim(data_dict, bird, session_id)
             visit_vectors_raw = visit_vectors_raw[:, stim_idx_cell]
             cache_vectors_raw = cache_vectors_raw[:, stim_idx_cell]
             ret_vectors_raw = ret_vectors_raw[:, stim_idx_cell]
@@ -317,7 +275,7 @@ for bird in bird_ids:
         barcode_dict['retrieve_loc'] = ret_loc
         barcode_dict['visit_loc'] = visit_loc
 
-        barcode_dict['active_cache_frac_proj'] = active_cache_frac
+        barcode_dict['active_cache_frac'] = active_cache_frac
 
         data_dict[bird][session_id]['barcode_dict'] = barcode_dict
 

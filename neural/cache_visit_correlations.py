@@ -574,6 +574,11 @@ ax[0, 3].set_title('DMZ/SESN/ETV?')
 
 f.supxlabel(f'% caches active')
 
+for i in range(4):
+    for j in range(2):
+        ax[i, j].spines['right'].set_visible(False)
+        ax[i, j].spines['top'].set_visible(False)
+
 f.savefig(f'{save_figs_dir}pct_caches_active.png', dpi=600, bbox_inches='tight')
 plt.show()
 

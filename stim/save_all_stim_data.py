@@ -153,11 +153,7 @@ for bird in bird_ids:
 
             # get the channel positions
             n_channels = stim_idx.shape[0]
-            if bird == 'RBY94':
-                # no hisotolgy, just use position on the probe
-                ch_pos = np.load(f"{session_dir}{ks_dir}channel_positions.npy")
-            else:
-                ch_pos = data_dict[bird][session_id]['channel_pos']
+            ch_pos = data_dict[bird][session_id]['channel_pos']
             
             # keep channels that are surrounded by stim responsive channels
             shank_idx = n_channels//2

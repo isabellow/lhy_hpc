@@ -1,8 +1,11 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
 import os 
 import sys
+sys.path.append("..//stim/")
+from format_chronic_stim import idx_cells_by_stim
 
 
 '''
@@ -27,8 +30,8 @@ data_dict = np.load(data_file, allow_pickle=True).item()
 for bird in data_dict.keys():
     bird_ids.append(bird)
 
-# remove birds with no histology/behavior sessions
-no_hist = ['RBY94', 'LIM63']
+# remove birds with no behavior sessions
+no_hist = ['LIM63']
 bird_ids = np.setdiff1d(bird_ids, no_hist)
 
 ''' Fig params '''
@@ -67,21 +70,19 @@ for i, bird in enumerate(bird_ids):
             cache_modulated = data_dict[bird][session_id]['barcode_dict']['cache_modulated']
 
             # index cells by stim responsive channels
-            stim_idx = data_dict[bird][session_id]['stim_resp_idx_ch']
-            ch_pos = data_dict[bird][session_id]['channel_pos']
-            stim_pos = ch_pos[stim_idx]
-            n_cells = cell_pos.shape[0]
-            cell_stim_idx = np.zeros(n_cells)
-            for cell_idx, this_pos in enumerate(cell_pos):
-                cell_stim_idx[cell_idx] = np.any(np.all(stim_pos == this_pos, axis=1))
+            cell_stim_idx = idx_cells_by_stim(data_dict, bird, session_id)
 
             # excitatory/inhibitory indices
             exc_idx = data_dict[bird][session_id]['excitatory_idx']
             inhib_idx = data_dict[bird][session_id]['inhibitory_idx']
+
+            # shank index
+            shank_idx = data_dict[bird][session_id]['shank_A_idx']
             
             # store for this bird
             if 'cell_pos' in pos_dict[bird].keys():
                 pos_dict[bird]['cell_pos'] = np.row_stack((pos_dict[bird]['cell_pos'], cell_pos))
+                pos_dict[bird]['shank_A_idx'] = np.append(pos_dict[bird]['shank_A_idx'], shank_idx.astype(bool))
                 pos_dict[bird]['waveform_props'] = np.column_stack((pos_dict[bird]['waveform_props'], waveform_props))     
                 pos_dict[bird]['active_cache_frac'] = np.append(pos_dict[bird]['active_cache_frac'], active_cache_frac)
                 pos_dict[bird]['cache_modulated'] = np.append(pos_dict[bird]['cache_modulated'], cache_modulated)
@@ -90,6 +91,7 @@ for i, bird in enumerate(bird_ids):
                 pos_dict[bird]['inhibitory_idx'] = np.append(pos_dict[bird]['inhibitory_idx'], inhib_idx.astype(bool))
             else:
                 pos_dict[bird]['cell_pos'] = cell_pos
+                pos_dict[bird]['shank_A_idx'] = shank_idx.astype(bool)
                 pos_dict[bird]['waveform_props'] = waveform_props
                 pos_dict[bird]['active_cache_frac'] = active_cache_frac
                 pos_dict[bird]['cache_modulated'] = cache_modulated
@@ -102,6 +104,10 @@ for i, bird in enumerate(bird_ids):
                 shank_AP = np.zeros(2)
                 shank_AP[0] = np.mean(cell_AP[:3])
                 shank_AP[1] = np.mean(cell_AP[3:])
+                if any(np.isnan(shank_AP)):
+                    shank_AP[0] = 10001
+                    shank_AP[1] = 10000
+
                 pos_dict[bird]['AP'] = shank_AP
     
     # store the AP values and waveform props for all birds
@@ -111,36 +117,36 @@ for i, bird in enumerate(bird_ids):
     else:
         all_waveform_props = np.column_stack((all_waveform_props, pos_dict[bird]['waveform_props']))
 
-# ''' Histogram of cache responsiveness for stim channels only '''
-# active_cache_frac_all = np.asarray([])
-# excitatory_idx_all = np.asarray([]).astype(bool)
-# inhibitory_idx_all = np.asarray([]).astype(bool)
-# cache_modulation_all = np.asarray([])
-# for bird in bird_ids:
-#     this_active_cache = pos_dict[bird]['active_cache_frac'][pos_dict[bird]['cell_stim_idx']]
-#     this_cache_mod = pos_dict[bird]['cache_modulated'][pos_dict[bird]['cell_stim_idx']]
-#     this_exc_idx = pos_dict[bird]['excitatory_idx'] & pos_dict[bird]['cell_stim_idx']
-#     this_inhib_idx = pos_dict[bird]['inhibitory_idx'] & pos_dict[bird]['cell_stim_idx']
-#     active_cache_frac_all = np.append(active_cache_frac_all, this_active_cache)
-#     excitatory_idx_all = np.append(excitatory_idx_all, this_exc_idx)
-#     inhibitory_idx_all = np.append(inhibitory_idx_all, this_inhib_idx)
-#     cache_modulation_all = np.append(cache_modulation_all, this_cache_mod)
+''' Histogram of cache responsiveness for stim channels only '''
+active_cache_frac_all = np.asarray([])
+excitatory_idx_all = np.asarray([]).astype(bool)
+inhibitory_idx_all = np.asarray([]).astype(bool)
+cache_modulation_all = np.asarray([])
+for bird in bird_ids:
+    this_active_cache = pos_dict[bird]['active_cache_frac'][pos_dict[bird]['cell_stim_idx']]
+    this_cache_mod = pos_dict[bird]['cache_modulated'][pos_dict[bird]['cell_stim_idx']]
+    this_exc_idx = pos_dict[bird]['excitatory_idx'][pos_dict[bird]['cell_stim_idx']]
+    this_inhib_idx = pos_dict[bird]['inhibitory_idx'][pos_dict[bird]['cell_stim_idx']]
+    active_cache_frac_all = np.append(active_cache_frac_all, this_active_cache)
+    excitatory_idx_all = np.append(excitatory_idx_all, this_exc_idx)
+    inhibitory_idx_all = np.append(inhibitory_idx_all, this_inhib_idx)
+    cache_modulation_all = np.append(cache_modulation_all, this_cache_mod)
 
-# # fig params
-# f, ax = plt.subplots(2, 1, figsize=(4, 4), sharex=True)
+# fig params
+f, ax = plt.subplots(2, 1, figsize=(4, 4), sharex=True)
 
-# # plot the percent of caches that each cell was active for
-# pct_active = active_cache_frac_all*100
-# ax[0].hist(pct_active[excitatory_idx_all], bins=30)
-# ax[1].hist(pct_active[inhibitory_idx_all], bins=30)
+# plot the percent of caches that each cell was active for
+pct_active = active_cache_frac_all*100
+ax[0].hist(pct_active[excitatory_idx_all], bins=30)
+ax[1].hist(pct_active[inhibitory_idx_all], bins=30)
 
-# # ticks and labels
-# ax[1].set_xlabel(f'% caches active')
-# ax[0].set_ylabel('N excitatory cells')
-# ax[1].set_ylabel('N inhibitory cells')
+# ticks and labels
+ax[1].set_xlabel(f'% caches active')
+ax[0].set_ylabel('N excitatory cells')
+ax[1].set_ylabel('N inhibitory cells')
 
-# f.savefig(f'{save_figs_dir}caches_active_stim_only.png', dpi=600, bbox_inches='tight')
-# plt.show()
+f.savefig(f'{save_figs_dir}caches_active_stim_only.png', dpi=600, bbox_inches='tight')
+plt.show()
 
 ''' Plot in 3D brain space '''
 
@@ -343,14 +349,9 @@ for bird in bird_ids:
     excitatory_idx_all = np.append(excitatory_idx_all, this_exc_idx)
     inhibitory_idx_all = np.append(inhibitory_idx_all, this_inhib_idx)
 
-exc_vmax = 0.6
-exc_vmin = 0
-inhb_vmax = 1
-inhb_vmin = 0
-
 # fig params
 gs_kw = dict(hspace=0.1, wspace=0.3)
-f, ax = plt.subplots(2, n_shanks, figsize=(10, 10),
+f, ax = plt.subplots(2, n_shanks, figsize=(14, 10),
                      sharey=True, gridspec_kw=gs_kw)
 title_size = 14
 axis_label = 12
@@ -373,6 +374,8 @@ for bird in bird_ids:
     nucleus_dvs = data_dict[bird]['nucleus_dvs']
     A_nuc_lims = nucleus_dvs[0]
     B_nuc_lims = nucleus_dvs[1]
+    if bird == 'RBY94':
+        B_nuc_lims = np.asarray([np.nan, np.nan])
 
     # waveform properties
     wf_width = pos_dict[bird]['waveform_props'][1]
@@ -382,9 +385,8 @@ for bird in bird_ids:
     # positions
     cell_pos = pos_dict[bird]['cell_pos']
     cell_dv = cell_pos[:, -1]
-    _, ap_idx = np.unique(cell_pos[:, 1], return_inverse=True)
-    B_idx = ap_idx < 3
-    A_idx = ap_idx >= 3
+    A_idx = pos_dict[bird]['shank_A_idx']
+    B_idx = ~A_idx
 
     # update positions (cells, nucleus bounds) s.t. min DV is zero
     min_dv_A = np.min(np.append(cell_dv[A_idx], A_nuc_lims))
@@ -402,12 +404,6 @@ for bird in bird_ids:
 
     # index by shank and cluster
     B_excite = B_idx & exc_cells
-    B_inhib = B_idx & inhb_cells
-    A_excite = A_idx & exc_cells
-    A_inhib = A_idx & inhb_cells
-
-    # get colors based on cache modulation
-    
     B_inhib = B_idx & inhb_cells
     A_excite = A_idx & exc_cells
     A_inhib = A_idx & inhb_cells
@@ -433,10 +429,10 @@ for bird in bird_ids:
                                  cell_dv[B_excite] + jit_dv[B_excite],
                                  c=cell_colors, s=size_pts,
                                  lw=0, zorder=1, alpha=alpha_pts)
-    ax[0, B_ax].scatter(wf_width[B_inhib] + jit_w[B_inhib],
-                        cell_dv[B_inhib] + jit_dv[B_inhib], 
-                        c='xkcd:gray', 
-                        s=size_pts, lw=0, zorder=0, alpha=0.2)
+    # ax[0, B_ax].scatter(wf_width[B_inhib] + jit_w[B_inhib],
+    #                     cell_dv[B_inhib] + jit_dv[B_inhib], 
+    #                     c='xkcd:gray', 
+    #                     s=size_pts, lw=0, zorder=0, alpha=0.2)
     ax[0, B_ax].vlines(0.5, ylims[1], ylims[0], colors='xkcd:gray', linestyles='dashed', lw=0.5)
     
     # highlight the excitatory cells - A shank
@@ -452,10 +448,10 @@ for bird in bird_ids:
                         cell_dv[A_excite] + jit_dv[A_excite],
                         c=cell_colors, s=size_pts, 
                         lw=0, zorder=1, alpha=alpha_pts)
-    ax[0, A_ax].scatter(wf_width[A_inhib] + jit_w[A_inhib],
-                        cell_dv[A_inhib] + jit_dv[A_inhib], 
-                        c='xkcd:gray', 
-                        s=size_pts, lw=0, zorder=0, alpha=0.2)
+    # ax[0, A_ax].scatter(wf_width[A_inhib] + jit_w[A_inhib],
+    #                     cell_dv[A_inhib] + jit_dv[A_inhib], 
+    #                     c='xkcd:gray', 
+    #                     s=size_pts, lw=0, zorder=0, alpha=0.2)
     ax[0, A_ax].vlines(0.5, ylims[1], ylims[0], colors='xkcd:gray', linestyles='dashed', lw=0.5)
 
     # highlight the inhibitory cells - B shank
@@ -467,10 +463,10 @@ for bird in bird_ids:
             cell_colors.append(s_color)
         else:
             cell_colors.append(n_color)
-    ax[1, B_ax].scatter(wf_width[B_excite] + jit_w[B_excite], 
-                        cell_dv[B_excite] + jit_dv[B_excite],
-                        c='xkcd:gray', 
-                        s=size_pts, lw=0, zorder=0, alpha=0.2)
+    # ax[1, B_ax].scatter(wf_width[B_excite] + jit_w[B_excite], 
+    #                     cell_dv[B_excite] + jit_dv[B_excite],
+    #                     c='xkcd:gray', 
+    #                     s=size_pts, lw=0, zorder=0, alpha=0.2)
     sc_inhb = ax[1, B_ax].scatter(wf_width[B_inhib] + jit_w[B_inhib],
                                   cell_dv[B_inhib] + jit_dv[B_inhib],
                                   c=cell_colors,
@@ -486,10 +482,10 @@ for bird in bird_ids:
             cell_colors.append(s_color)
         else:
             cell_colors.append(n_color)
-    ax[1, A_ax].scatter(wf_width[A_excite] + jit_w[A_excite], 
-                        cell_dv[A_excite] + jit_dv[A_excite],
-                        c='xkcd:gray', 
-                        s=size_pts, lw=0, zorder=0, alpha=0.2)
+    # ax[1, A_ax].scatter(wf_width[A_excite] + jit_w[A_excite], 
+    #                     cell_dv[A_excite] + jit_dv[A_excite],
+    #                     c='xkcd:gray', 
+    #                     s=size_pts, lw=0, zorder=0, alpha=0.2)
     ax[1, A_ax].scatter(wf_width[A_inhib] +  + jit_w[A_inhib],
                         cell_dv[A_inhib] + jit_dv[A_inhib], 
                         c=cell_colors,
@@ -509,6 +505,8 @@ for bird in bird_ids:
     # titles
     ax[0, A_ax].set_title(f'{bird}', fontsize=axis_label)
     ax[0, B_ax].set_title(f'{bird}', fontsize=axis_label)
+    if bird == 'RBY94':
+        ax[0, B_ax].set_title(f'{bird}', fontsize=axis_label, fontstyle='italic')
     
 
     # format axes
@@ -544,6 +542,45 @@ legend_elements = [
             label='nucleus boundaries')
 ]
 ax[0, -1].legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(3.5, 1))
+
+# add note for RBY94 subplots
+# subplot positions + padding
+box_axes = [
+    ax[0, -2], ax[0, -1],
+    ax[1, -2], ax[1, -1],
+]
+bboxes = [a.get_position() for a in box_axes]
+x0 = min(bb.x0 for bb in bboxes)
+y0 = min(bb.y0 for bb in bboxes)
+x1 = max(bb.x1 for bb in bboxes)
+y1 = max(bb.y1 for bb in bboxes)
+pad_x = 0.008
+pad_y = 0.03
+
+# add rectangle in figure coordinates
+rect = Rectangle(
+    (x0 - pad_x, y0 - pad_y),
+    (x1 - x0) + 2 * pad_x,
+    (y1 - y0) + 2 * pad_y,
+    transform=f.transFigure,
+    fill=False,
+    edgecolor='red',
+    linewidth=1,
+    clip_on=False,
+)
+
+f.add_artist(rect)
+
+# add label
+f.text(
+    (x0 + x1) / 2,
+    y1 + pad_y + 0.002,
+    'no histology',
+    color='red',
+    ha='center',
+    va='bottom',
+    fontsize=axis_label
+)
 
 f.savefig(f'{save_figs_dir}/width_by_depth_sig_cache_mod_alt.png', dpi=400, bbox_inches='tight')
 plt.show()

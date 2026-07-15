@@ -8,6 +8,8 @@ import color_utils, make_data_dict
 import get_probe_coords
 import format_waveform_data, waveform_analysis, waveform_plots
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+
 
 '''
 For each session gather the following info for each cell
@@ -71,8 +73,8 @@ if update_pos == 'y':
 # collect all the cell positions
 all_cell_pos = []
 for bird in bird_ids:
-    if bird == 'RBY94':
-        continue
+    # if bird == 'RBY94':
+    #     continue
     for session_id in data_dict[bird]['all_sessions']:
         if 'cell_pos' in data_dict[bird][session_id].keys():
             cell_pos = data_dict[bird][session_id]['cell_pos']
@@ -82,8 +84,8 @@ for bird in bird_ids:
                 all_cell_pos = np.row_stack([all_cell_pos, cell_pos])
 
 # get the dm/dl boundary points
-min_ap = np.min(all_cell_pos[:, 1])
-max_ap = np.max(all_cell_pos[:, 1])
+min_ap = np.nanmin(all_cell_pos[:, 1])
+max_ap = np.nanmax(all_cell_pos[:, 1])
 ap_lims = np.asarray([min_ap, max_ap+100])
 dmdl = get_probe_coords.define_dm_dl(ap_lims, n_pts=100)
 
@@ -91,8 +93,8 @@ dmdl = get_probe_coords.define_dm_dl(ap_lims, n_pts=100)
 for i, bird in enumerate(bird_ids):
     if i == 0:
         all_waveform_props = data_dict[bird]['all_waveform_props']
-    elif bird == 'RBY94':
-        continue
+    # elif bird == 'RBY94':
+    #     continue
     else:
         waveform_props = data_dict[bird]['all_waveform_props']
         all_waveform_props = np.column_stack([all_waveform_props, waveform_props])
@@ -106,8 +108,8 @@ exc_idx, _ = waveform_analysis.clu_waveforms_kmeans(width, asymm, log_fr)
 # collect the bird/shank IDs and insertion coordinates
 bird_shank_list = []
 for i, bird in enumerate(bird_ids):
-    if bird == 'RBY94':
-        continue
+    # if bird == 'RBY94':
+    #     continue
     insert_coords = data_dict[bird]['insert_coords']
     bird_shank_list.append(f'{bird}_A')
     bird_shank_list.append(f'{bird}_B')
@@ -140,7 +142,8 @@ for i, bird in enumerate(bird_ids):
         if 'cell_pos' in data_dict[bird][session_id].keys():
             pos_sessions.append(f'{bird}_{session_id}')
         preprocessed_data = data_dict[bird][session_id]['preprocessed_data']
-        if ('behavior' in preprocessed_data) & ('ephys' in preprocessed_data):
+        # if ('behavior' in preprocessed_data) & ('ephys' in preprocessed_data):
+        if ('ephys' in preprocessed_data):
             behavior_sessions.append(f'{bird}_{session_id}')
 sessions_to_use = list(set(pos_sessions) & set (behavior_sessions))
 
@@ -149,8 +152,8 @@ sessions_to_use = list(set(pos_sessions) & set (behavior_sessions))
 pos_dict = {}
 all_AP = np.asarray([])
 for i, bird in enumerate(bird_ids):
-    if (bird == 'LIM63') | (bird == 'RBY94'):
-        continue
+    # if (bird == 'LIM63') | (bird == 'RBY94'):
+    #     continue
     pos_dict[bird] = {}
     for session_id in data_dict[bird]['all_sessions']:
         if f'{bird}_{session_id}' in sessions_to_use:
@@ -172,16 +175,22 @@ for i, bird in enumerate(bird_ids):
             # excitatory/inhibitory indices
             exc_idx = data_dict[bird][session_id]['excitatory_idx']
             inhib_idx = data_dict[bird][session_id]['inhibitory_idx']
+
+            # shank index
+            shank_idx = data_dict[bird][session_id]['shank_A_idx']
+
             
             # store for this bird
             if 'cell_pos' in pos_dict[bird].keys():
                 pos_dict[bird]['cell_pos'] = np.row_stack((pos_dict[bird]['cell_pos'], cell_pos))
+                pos_dict[bird]['shank_A_idx'] = np.append(pos_dict[bird]['shank_A_idx'], shank_idx.astype(bool))
                 pos_dict[bird]['waveform_props'] = np.column_stack((pos_dict[bird]['waveform_props'], waveform_props))     
                 pos_dict[bird]['cell_stim_idx'] = np.append(pos_dict[bird]['cell_stim_idx'], cell_stim_idx.astype(bool))
                 pos_dict[bird]['excitatory_idx'] = np.append(pos_dict[bird]['excitatory_idx'], exc_idx.astype(bool))
                 pos_dict[bird]['inhibitory_idx'] = np.append(pos_dict[bird]['inhibitory_idx'], inhib_idx.astype(bool))
             else:
                 pos_dict[bird]['cell_pos'] = cell_pos
+                pos_dict[bird]['shank_A_idx'] = shank_idx.astype(bool)
                 pos_dict[bird]['waveform_props'] = waveform_props
                 pos_dict[bird]['cell_stim_idx'] = cell_stim_idx.astype(bool)
                 pos_dict[bird]['excitatory_idx'] = exc_idx.astype(bool)
@@ -192,6 +201,10 @@ for i, bird in enumerate(bird_ids):
                 shank_AP = np.zeros(2)
                 shank_AP[0] = np.mean(cell_AP[:3])
                 shank_AP[1] = np.mean(cell_AP[3:])
+                if any(np.isnan(shank_AP)):
+                    shank_AP[0] = 10001
+                    shank_AP[1] = 10000
+
                 pos_dict[bird]['AP'] = shank_AP
     
     # store the AP values and waveform props for all birds
@@ -204,7 +217,7 @@ for i, bird in enumerate(bird_ids):
 
 ''' Plot against depth/waveform width for each shank, sorted by AP location '''
 # data params
-n_birds = len(bird_ids) - 2
+n_birds = len(bird_ids)
 n_shanks = n_birds*2
 ap_sort = np.argsort(all_AP) 
 ap_sort_idx = np.argsort(ap_sort)
@@ -214,8 +227,8 @@ excitatory_idx_all = np.asarray([]).astype(bool)
 inhibitory_idx_all = np.asarray([]).astype(bool)
 all_cell_fr = np.asarray([])
 for bird in bird_ids:
-    if (bird == 'LIM63') | (bird == 'RBY94'):
-        continue
+    # if (bird == 'LIM63') | (bird == 'RBY94'):
+    #     continue
     this_exc_idx = pos_dict[bird]['excitatory_idx']
     this_inhib_idx = pos_dict[bird]['inhibitory_idx']
     excitatory_idx_all = np.append(excitatory_idx_all, this_exc_idx)
@@ -229,7 +242,7 @@ inhb_vmin = np.nanmin(all_cell_fr[inhibitory_idx_all])
 
 # fig params
 gs_kw = dict(hspace=0.1, wspace=0.3)
-f, ax = plt.subplots(2, n_shanks, figsize=(10, 10),
+f, ax = plt.subplots(2, n_shanks, figsize=(14, 10),
                      sharey=True, gridspec_kw=gs_kw)
 title_size = 14
 axis_label = 12
@@ -240,12 +253,12 @@ size_pts = 6
 
 i = 0
 for bird in bird_ids:
-    if (bird == 'LIM63') | (bird == 'RBY94'):
-        continue
     # nucleus boundaries - A min, A max; B min, B max
     nucleus_dvs = data_dict[bird]['nucleus_dvs']
     A_nuc_lims = nucleus_dvs[0]
     B_nuc_lims = nucleus_dvs[1]
+    if bird == 'RBY94':
+        B_nuc_lims = np.asarray([np.nan, np.nan])
 
     # waveform properties
     wf_width = pos_dict[bird]['waveform_props'][1]
@@ -255,9 +268,8 @@ for bird in bird_ids:
     # positions
     cell_pos = pos_dict[bird]['cell_pos']
     cell_dv = cell_pos[:, -1]
-    _, ap_idx = np.unique(cell_pos[:, 1], return_inverse=True)
-    B_idx = ap_idx < 3
-    A_idx = ap_idx >= 3
+    A_idx = pos_dict[bird]['shank_A_idx']
+    B_idx = ~A_idx
 
     # update positions (cells, nucleus bounds) s.t. min DV is zero
     min_dv_A = np.min(np.append(cell_dv[A_idx], A_nuc_lims))
@@ -324,7 +336,7 @@ for bird in bird_ids:
                         cell_dv[A_excite] + jit_dv[A_excite],
                         c='xkcd:gray', 
                         s=size_pts, lw=0, zorder=0, alpha=0.2)
-    ax[1, A_ax].scatter(wf_width[A_inhib] +  + jit_w[A_inhib],
+    ax[1, A_ax].scatter(wf_width[A_inhib] + jit_w[A_inhib],
                         cell_dv[A_inhib] + jit_dv[A_inhib], 
                         c=cell_fr[A_inhib], cmap='jet', 
                         vmin=inhb_vmin, vmax=inhb_vmax,
@@ -344,7 +356,8 @@ for bird in bird_ids:
     # titles
     ax[0, A_ax].set_title(f'{bird}', fontsize=axis_label)
     ax[0, B_ax].set_title(f'{bird}', fontsize=axis_label)
-    
+    if bird == 'RBY94':
+        ax[0, B_ax].set_title(f'{bird}', fontsize=axis_label, fontstyle='italic')
 
     # format axes
     for j in range(2):
@@ -383,6 +396,45 @@ cbar = f.colorbar(sc_inhb, cax=cax)
 cbar.set_label('log firing rate')
 cbar.set_ticks([sc_exc.norm.vmin, sc_exc.norm.vmax])
 cbar.set_ticklabels([rf'$10^{{{min_fr}}}$', rf'$10^{{{max_fr}}}$'])
+
+# add note for RBY94 subplots
+# subplot positions + padding
+box_axes = [
+    ax[0, -2], ax[0, -1],
+    ax[1, -2], ax[1, -1],
+]
+bboxes = [a.get_position() for a in box_axes]
+x0 = min(bb.x0 for bb in bboxes)
+y0 = min(bb.y0 for bb in bboxes)
+x1 = max(bb.x1 for bb in bboxes)
+y1 = max(bb.y1 for bb in bboxes)
+pad_x = 0.008
+pad_y = 0.03
+
+# add rectangle in figure coordinates
+rect = Rectangle(
+    (x0 - pad_x, y0 - pad_y),
+    (x1 - x0) + 2 * pad_x,
+    (y1 - y0) + 2 * pad_y,
+    transform=f.transFigure,
+    fill=False,
+    edgecolor='red',
+    linewidth=1,
+    clip_on=False,
+)
+
+f.add_artist(rect)
+
+# add label
+f.text(
+    (x0 + x1) / 2,
+    y1 + pad_y + 0.002,
+    'no histology',
+    color='red',
+    ha='center',
+    va='bottom',
+    fontsize=axis_label
+)
 
 f.savefig(f'{save_figs}/width_by_depth_fr.png', dpi=400, bbox_inches='tight')
 plt.show()

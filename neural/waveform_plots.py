@@ -231,6 +231,62 @@ def plot_bool_by_pos(cell_pos, bool_idx, dmdl_bound,
     return fig, ax
 
 
+def plot_probe_by_pos(shank_locations, colors, labels):
+    '''
+    plot probes as lines from entry to tip in 3D space
+    could also be used for stim electrodes?
+
+    shank_locations : list of shape (2, 3) arrays
+        [ML, AP, DV] position of entry and tip point for each shank
+    colors : list of strings
+        color for each shank
+    labels : list of strings
+        label for each shank
+    '''
+    fig = plt.figure(figsize=(16, 8))
+    ax = plt.axes([0, 0, .6, 1.2], projection='3d')
+
+    # plot probes
+    for i, shank_loc in enumerate(shank_locations):
+        ax.plot(shank_loc[:, 0], shank_loc[:, 1], shank_loc[:, 2], 
+                c=colors[i], lw=2, label=labels[i])
+
+    # plot DM/DL boundary
+    ax.scatter(dmdl_bound[0], dmdl_bound[1], np.zeros_like(dmdl_bound[0]),
+                c='k', marker='.', s=1)
+
+    # labels
+    ax.set_xlabel('ML (um)')
+    ax.set_ylabel('AP (um)')
+    ax.set_zlabel('DV (um)')
+
+    # set axis limits
+    ax.axis('equal')
+    z_lims = ax.get_zlim()
+    ax.set_zlim(z_lims[1], z_lims[0])
+
+    # background color
+    ax.xaxis.pane.fill = False
+    ax.yaxis.pane.fill = False
+    ax.zaxis.pane.fill = False
+    ax.xaxis.pane.set_edgecolor('xkcd:grey')
+    ax.yaxis.pane.set_edgecolor('xkcd:grey')
+    ax.zaxis.pane.set_edgecolor('xkcd:grey')
+    ax.xaxis.pane.set_color('xkcd:light grey')
+    ax.yaxis.pane.set_color('xkcd:light grey')
+    ax.zaxis.pane.set_color('xkcd:light grey')
+
+    # add a legend
+    ax.legend(loc='upper right', bbox_to_anchor=(1.0, 1.0), markerscale=2)
+
+    ax.view_init(azim=-50, elev=45)
+    ax.set_box_aspect(aspect=None, zoom=1)
+    plt.show()
+
+    return fig, ax
+
+
+
 def add_bird_labels(fig, ax, bird_shank_list, insertion_coords):
     '''
     Add bird/shank labels to a 3D plot at the given insertion coords

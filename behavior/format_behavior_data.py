@@ -4,12 +4,37 @@ import pandas as pd
 import sys
 sys.path.append("../utils/")
 from load_matlab_data import loadmat_sbx
+from scipy.ndimage import gaussian_filter, gaussian_filter1d
+from scipy import stats
 
 ''' Load and format behavior data '''
 def load_behavior_data(data_dir):
     seed_struct = loadmat_sbx(f'{data_dir}annotatedSeeds.mat')['annotatedSeeds']
     count_data = seed_struct['countData']
-    return(seed_struct, count_data)
+    return seed_struct, count_data
+
+
+''' Basic behavior data '''
+def get_position(data_dir):
+    # load the posture tracking data
+    smooth_posture_preds = np.load(f'{data_dir}posture_pos_smooth.npy') # time x keypoints x xyz
+
+    # get the rough head position (between the eyes)
+    eye_xy = smooth_posture_preds[:, [7, 11], :2] # left and right eye xy positions
+    avg_head_xy = np.mean(eye_xy, axis=1)
+
+    return avg_head_xy
+
+def get_speed(pos_2d, smooth_sig=50, fps=50):
+    smooth_pos = gaussian_filter(pos_2d, sigma=smooth_sig, axes=0)
+    abs_speed_xy  = np.sqrt(
+        np.diff(smooth_pos[:, 0]) ** 2 +
+        np.diff(smooth_pos[:, 1]) ** 2
+    ) * fps
+    abs_speed_xy  = np.append(abs_speed_xy, np.nan)  # pad to match n_frames
+
+    return abs_speed_xy
+
 
 ''' Classify arena interactions '''
 def get_cache_ints(count_data, seed_struct):
@@ -27,6 +52,22 @@ def get_cache_ints(count_data, seed_struct):
     cache_offsets = all_int_end[all_int_changes > 0]
 
     return cache_onsets, cache_offsets
+
+def get_retrieve_ints(count_data, seed_struct):
+    '''
+    Retrievals are site interactions where a seed is removed
+    '''
+    # get all site interactions
+    all_int_start = count_data['newSite']
+    all_int_end = count_data['endSite']
+    all_int_changes = np.sum(seed_struct['seedChanges'], axis=1)
+    n_interactions = all_int_start.shape[0]
+
+    # caches = add a seed
+    ret_onsets = all_int_start[all_int_changes < 0]
+    ret_offsets = all_int_end[all_int_changes < 0]
+
+    return ret_onsets, ret_offsets
 
 def get_caches_refined(count_data, seed_struct, n_total_frames, dt=0.02):
     '''
@@ -152,6 +193,72 @@ def get_retrievals_refined(count_data, seed_struct, n_total_frames, dt=0.02):
 
     return ret_onsets.astype(int), ret_offsets.astype(int), ret_perch_idx.astype(int)
 
+def get_checks_refined(count_data, seed_struct, n_total_frames, dt=0.02):
+    '''
+    Retrievals are site interactions where the contents are unchanged
+
+    Returns check onset and offset times, 
+    as well as the perch ID for each check
+    
+    Define a check window as in SC, EM 2024
+    - 250 ms before check onset to 250 ms after check offset
+    - truncated to avoid other interactions
+    - exclude checks > 1.5 sec (approximation of other non-check interactions)
+    '''
+    # get all site interactions
+    all_int_start = count_data['newSite']
+    all_int_end = count_data['endSite']
+    all_site_idx = count_data['siteNum']
+    all_int_changes = np.sum(seed_struct['seedChanges'], axis=1)
+    n_interactions = all_int_start.shape[0]
+
+    # checks = seed unchanged
+    check_onsets_raw = all_int_start[all_int_changes == 0]
+    check_offsets_raw = all_int_end[all_int_changes == 0]
+    check_perch_idx = all_site_idx[all_int_changes == 0]
+
+    # get all perch interactions
+    all_perch_start = count_data['newPerch']
+    all_perch_end = count_data['endPerch']
+    n_perches = all_perch_start.shape[0]
+
+    # +/-250 ms window around check, avoiding other events
+    t_window = 0.25/dt
+    check_onsets = np.asarray([])
+    check_offsets = np.asarray([])
+    for cs, ce in zip(check_onsets_raw, check_offsets_raw):
+        # create the time window
+        check_start = cs - t_window
+        check_end = ce + t_window
+
+        # get the perch index for this retrieval event
+        temp_perch_start = all_perch_start.copy()
+        temp_perch_start[temp_perch_start > cs] = 0
+        check_idx = np.argmin(cs-temp_perch_start)
+
+        # check for overlap with other events
+        if check_idx > 0:
+            if all_perch_end[check_idx-1] >= check_start:
+                check_start = all_perch_end[check_idx-1]
+        if check_idx < n_perches-1:
+            if all_perch_start[check_idx+1] <= check_end:
+                check_end = all_perch_start[check_idx+1]
+
+        # check session ends
+        if check_start < 0:
+            check_start = 0
+        if check_end > n_total_frames:
+            check_end = n_total_frames
+
+        # check duration
+        if (check_end - check_start) > (1.5/dt):
+            continue
+
+        check_onsets = np.append(check_onsets, check_start)
+        check_offsets = np.append(check_offsets, check_end)
+
+    return check_onsets.astype(int), check_offsets.astype(int), check_perch_idx.astype(int)
+
 def get_visits_raw(count_data):
     '''
     Visits are perch interactions without eating or site interaction
@@ -192,8 +299,6 @@ def get_visits_refined(count_data, n_total_frames, dt=0.02,
 
     Define a visit window as in SC, EM 2024
     +/- 500 ms from perch arrival, truncated to avoid other interactions
-
-    TODO! remove feeder perches
     '''
     # get all perch interactions
     all_perch_start = count_data['newPerch']
@@ -316,7 +421,8 @@ def spikes_by_cache(spike_frame, cache_onsets, cache_offsets, cache_window=20, d
 
     # save cache onset times for plotting
     t_zero_idx = int(cache_window//2//dt + 1)
-    cache_ons = cache_t_points[t_zero_idx - cache_dur[duration_idx]]
+    onset_idx = np.clip(t_zero_idx - cache_dur[duration_idx], 0, len(cache_t_points) - 1)
+    cache_ons = cache_t_points[onset_idx]
 
     return cache_mat, cache_t_points, cache_ons
 
@@ -387,8 +493,8 @@ def get_feeder_ints(count_data, use_beak=True, feeder_perches=np.asarray([84, 85
 
     return feeder_int_start, feeder_int_end, feeder_idx
 
+
 def get_foot_angle(data_dir, posture_file):
-    # TODO why are some magnitudes coming out to zero?
     # get a vector between the two feet
     smooth_posture_preds = np.load(f'{data_dir}{posture_file}') # time x keypoints x xyz
     feet_xy = smooth_posture_preds[:, [10, 14], :2]

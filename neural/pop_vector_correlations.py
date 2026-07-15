@@ -19,7 +19,6 @@ data_file = f"{root_dir}stim_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
 
 # load the data dictionary and get bird ids
-data_dict = np.load(data_file, allow_pickle=True).item()
 bird_ids = []
 data_dict = np.load(data_file, allow_pickle=True).item()
 for bird in data_dict.keys():
