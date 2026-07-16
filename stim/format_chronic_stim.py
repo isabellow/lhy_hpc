@@ -6,6 +6,8 @@ import sys
 sys.path.append("../utils/")
 import load_matlab_data
 import helpers
+sys.path.append("..//neural/")
+from format_waveform_data import get_spike_times, load_wf_data, sort_wf_by_channel
 
 import scipy.io
 import os
@@ -23,6 +25,15 @@ def load_stim(data_dir, stim_pol="neg", verbose=True):
     if verbose:
         print(f'loaded {n_stim} stim events in {toc-tic} seconds')
     return ephys_data
+
+def load_all_stim_times(data_dir):
+    stim_times = np.asarray([])
+    for file in sorted(os.listdir(data_dir)):
+        if "stim_t" in file:
+            stim_t = np.load(f'{data_dir}{file}')
+            stim_t = np.squeeze(stim_t.astype(int))
+            stim_times = np.append(stim_times, stim_t)
+    return np.unique(stim_times).astype(int)
 
 def sort_stim_by_channel(data_dir, ephys_data):
     '''
@@ -165,3 +176,78 @@ def highpass(x, highcut, fs, order=5, axis=-1, kind='butter'):
     else:
         raise ValueError("Filter kind not recognized.")
     return filtfilt(b, a, x, axis=axis)
+
+
+''' To sort/filter cells by stim responsiveness '''
+def idx_cells_by_stim(data_dict, bird, session_id):
+    '''
+    Given stim responsive channels for a bird/session,
+    return whether each cell is on or surrounded by stim-responsive channels
+    (i.e., in the projection nucleus)
+    '''
+    # get each cell depth and shank
+    cell_pos = data_dict[bird][session_id]['cell_pos']
+    n_cells = cell_pos.shape[0]
+    cell_dv = cell_pos[:, -1]
+    A_idx = data_dict[bird][session_id]['shank_A_idx']
+    B_idx = ~A_idx
+
+    # situate each cell in the projection nucleus or neighboring regions
+    nucleus_dvs = data_dict[bird][session_id]['nucleus_dvs']
+    A_nuc_lims = nucleus_dvs[0]
+    B_nuc_lims = nucleus_dvs[1]
+
+    DL_idx = np.zeros(n_cells).astype(bool)
+    DL_idx[A_idx] = cell_dv[A_idx] < A_nuc_lims[0]
+    DL_idx[B_idx] = cell_dv[B_idx] < B_nuc_lims[0]
+
+    DMZ_idx = np.zeros(n_cells).astype(bool)
+    DMZ_idx[A_idx] = cell_dv[A_idx] > A_nuc_lims[1]
+    DMZ_idx[B_idx] = cell_dv[B_idx] > B_nuc_lims[1]
+
+    proj_idx = np.abs((DL_idx + DMZ_idx) - 1).astype(bool)
+    if bird == 'RBY94':
+        proj_idx[B_idx] = False
+
+    return proj_idx
+
+def chunk_cells_by_region(data_dict, bird, session_id):
+    '''
+    Index cells by location in the brain
+
+    1 = putative projection nucleus
+    0 = put. DL (dorsal/lateral)
+    2 = put. ventral subiculum/SESN/DMZ (ventral/medial)
+    '''
+    # get each cell depth and shank
+    cell_pos = data_dict[bird][session_id]['cell_pos']
+    n_cells = cell_pos.shape[0]
+    cell_dv = cell_pos[:, -1]
+    A_idx = data_dict[bird][session_id]['shank_A_idx']
+    B_idx = ~A_idx
+
+    # situate each cell in the projection nucleus or neighboring regions
+    nucleus_dvs = data_dict[bird][session_id]['nucleus_dvs']
+    A_nuc_lims = nucleus_dvs[0]
+    B_nuc_lims = nucleus_dvs[1]
+
+    DL_idx = np.zeros(n_cells).astype(bool)
+    DL_idx[A_idx] = cell_dv[A_idx] < A_nuc_lims[0]
+    DL_idx[B_idx] = cell_dv[B_idx] < B_nuc_lims[0]
+
+    DMZ_idx = np.zeros(n_cells).astype(bool)
+    DMZ_idx[A_idx] = cell_dv[A_idx] > A_nuc_lims[1]
+    DMZ_idx[B_idx] = cell_dv[B_idx] > B_nuc_lims[1]
+
+    if bird == 'RBY94': # likely entire B shank was medial of the nucleus - TODO confirm this if possible with waveform props
+        DMZ_idx[B_idx] = True
+        DL_idx[B_idx] = False
+
+    proj_idx = np.abs((DL_idx + DMZ_idx) - 1).astype(bool)
+
+    cell_loc_idx = np.full(n_cells, np.nan)
+    cell_loc_idx[DL_idx] = 0
+    cell_loc_idx[proj_idx] = 1
+    cell_loc_idx[DMZ_idx] = 2
+
+    return cell_loc_idx

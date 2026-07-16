@@ -149,6 +149,47 @@ def probe_to_brain(insert_coords, probe_depth, probe_coords):
     
     return np.column_stack((brain_ml, brain_ap, brain_dv))
 
+def probe_to_brain_dv(insert_angle, probe_depth, probe_coords):
+    '''
+    Given a probe that is tilted towards the midline and not tilted in the AP axis,
+    convert from probe coordinates (as output by kilosort) to brain coordinates.
+    
+    Params
+    ------
+    insert_coords : nparray, shape (2, 3)
+        For each shank (A, B):
+        ML and AP coordinates of the shank entry point into the brain
+        the third value is the angle of probe insertion (in radians)
+    probe_depth : float
+        depth that probe was inserted
+    probe_coords : nparray, shape (n_channels, 2)
+        AP and DV coordinates along the probe for each channel
+        
+    Returns
+    -------
+    brain_coords : nparray, shape (n_channels, 3)
+        ML, AP, and DV coordinates in the brain
+    '''
+    # get probe params
+    probe_dv = probe_coords[:, 1]
+    n_channels = probe_coords.shape[0]
+    shank_dist = probe_coords[n_channels//2, 0] - probe_coords[0, 0]
+
+    # estimate the tip location for each shank
+    tip_dv = probe_depth*np.cos(insert_angle)
+
+    # convert the channel locations
+    brain_dv = tip_dv - probe_dv * np.cos(insert_angle)
+    
+    return brain_dv
+
+def get_channel_shank(probe_coords):
+    probe_ap = probe_coords[:, 0]
+    _, ap_idx = np.unique(probe_ap, return_inverse=True)
+    A_idx = ap_idx >= 3
+    
+    return A_idx
+
 def get_anatomy_info(session_info_file, data_dict):
     # get the bird list
     bird_list = []
@@ -165,8 +206,8 @@ def get_anatomy_info(session_info_file, data_dict):
         for session_id in session_info['id']:
             if session_id in data_dict[bird].keys():
                 # only calculate for new data
-                if 'depth' in data_dict[bird][session_id].keys():
-                    continue
+                # if 'depth' in data_dict[bird][session_id].keys():
+                #     continue
                 probe_depth = session_info.loc[session_info["id"] == session_id,
                                                "approx. depth (um)"].iloc[0]
                 data_dict[bird][session_id]['depth'] = probe_depth
@@ -185,6 +226,8 @@ def get_anatomy_info(session_info_file, data_dict):
         rel_ml = row['ML']
         rel_ap = row['AP']
         angle_deg = row['angle_deg']
+        if np.isnan(angle_deg):
+             angle_deg = 10
         
         # store the raw values
         insert_coords = np.asarray([rel_ml, rel_ap, angle_deg])
@@ -213,16 +256,27 @@ def get_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth):
 
     # load the channel positions and convert to brain coords
     ch_pos_probe = np.load(f"{session_dir}{ks_dir}channel_positions.npy")
-    ch_pos_brain = probe_to_brain(insert_coords=insert_coords,
-                                    probe_depth=depth,
-                                    probe_coords=ch_pos_probe)
+    ch_shank_a = get_channel_shank(ch_pos_probe)
+    if "RBY94" in session_dir:
+        # TODO finish saving shank index for each cell
+        brain_dv = probe_to_brain_dv(insert_angle=insert_coords[0, 2],
+                                            probe_depth=depth,
+                                            probe_coords=ch_pos_probe)
+        brain_ml = np.full(brain_dv.shape[0], np.nan)
+        brain_ap = np.full(brain_dv.shape[0], np.nan)
+        ch_pos_brain = np.column_stack((brain_ml, brain_ap, brain_dv))
+    else:
+        ch_pos_brain = probe_to_brain(insert_coords=insert_coords,
+                                        probe_depth=depth,
+                                        probe_coords=ch_pos_probe)
 
     # get the position of each cell in the brain
     cell_pos = np.zeros((n_cells, 3))
+    cell_shank_a = np.zeros(n_cells).astype(bool)
     for cell, ch in enumerate(wf_ch_idx):
         cell_pos[cell] = ch_pos_brain[ch]
-        
-    return cell_pos
+        cell_shank_a[cell] =  ch_shank_a[ch]
+    return cell_pos, cell_shank_a
 
 def get_channel_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth):
     # load and format the waveform struct
@@ -235,9 +289,17 @@ def get_channel_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth):
 
     # load the channel positions and convert to brain coords
     ch_pos_probe = np.load(f"{session_dir}{ks_dir}channel_positions.npy")
-    ch_pos_brain = probe_to_brain(insert_coords=insert_coords,
-                                    probe_depth=depth,
-                                    probe_coords=ch_pos_probe)
+    if "RBY94" in session_dir:
+        brain_dv = probe_to_brain_dv(insert_angle=insert_coords[0, 2],
+                                            probe_depth=depth,
+                                            probe_coords=ch_pos_probe)
+        brain_ml = np.full(brain_dv.shape[0], np.nan)
+        brain_ap = np.full(brain_dv.shape[0], np.nan)
+        ch_pos_brain = np.column_stack((brain_ml, brain_ap, brain_dv))
+    else:
+        ch_pos_brain = probe_to_brain(insert_coords=insert_coords,
+                                        probe_depth=depth,
+                                        probe_coords=ch_pos_probe)
         
     return ch_pos_brain
 
@@ -264,8 +326,6 @@ def save_cell_positions(data_dict, root_dir):
     the best channel for all good cells to the data dict
     '''
     for bird in data_dict.keys():
-        if bird == 'RBY94':
-            continue
         print(f'\nlocalizing cells for {bird}')
         insert_coords = data_dict[bird]['insert_coords']
         session_list = data_dict[bird]['all_sessions']
@@ -287,7 +347,8 @@ def save_cell_positions(data_dict, root_dir):
                                 data_dict[bird][session_id]['channel_pos'] = ch_pos
 
                                 # get the cell positions
-                                cell_pos = get_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth)
+                                cell_pos, cell_shank_a = get_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth)
                                 data_dict[bird][session_id]['cell_pos'] = cell_pos
+                                data_dict[bird][session_id]['shank_A_idx'] = cell_shank_a
 
     return data_dict

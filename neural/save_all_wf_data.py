@@ -92,10 +92,43 @@ for bird in bird_ids:
                             data_dict[bird][session_id]['waveform_props'] = waveform_props
                             if len(all_props) == 0:
                                 all_props = waveform_props
-                                data_dict[bird]['all_waveform_props'] = waveform_props
                             else:
                                 all_props = np.column_stack([all_props, waveform_props])
-                                data_dict[bird]['all_waveform_props'] = all_props
+                            data_dict[bird]['all_waveform_props'] = all_props
 
-# save the updated dictionary
+# Save inhib/exc clustering indices by session
+# gather the waveform properties and n cells
+all_waveform_props = []
+sess_idx = 0
+session_index = np.asarray([]).astype(int)
+for bird in bird_ids:
+    session_list = data_dict[bird]['all_sessions']
+    for session_id in session_list:
+        if 'waveform_props' in data_dict[bird][session_id].keys():
+            waveform_props = data_dict[bird][session_id]['waveform_props']
+            n_cells = waveform_props.shape[1]
+            if len(all_waveform_props) == 0:
+                all_waveform_props = waveform_props
+            else:
+                all_waveform_props = np.column_stack((all_waveform_props, waveform_props))
+            session_index = np.append(session_index, np.full(n_cells, sess_idx))
+            sess_idx += 1
+
+# cluster to get the cell type indices
+asymm = all_waveform_props[0]
+width = all_waveform_props[1]
+log_fr = all_waveform_props[2]
+exc_idx_all, inhib_idx_all = waveform_analysis.clu_waveforms_kmeans(width, asymm, log_fr)
+
+# save by session
+sess_idx = 0
+for bird in bird_ids:
+    session_list = data_dict[bird]['all_sessions']
+    for session_id in session_list:
+        if 'waveform_props' in data_dict[bird][session_id].keys():
+            data_dict[bird][session_id]['excitatory_idx'] = exc_idx_all[session_index==sess_idx]
+            data_dict[bird][session_id]['inhibitory_idx'] = inhib_idx_all[session_index==sess_idx]
+            sess_idx += 1
+
+''' Save the updated dictionary '''
 np.save(data_file, data_dict)

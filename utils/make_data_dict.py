@@ -56,7 +56,8 @@ def modify_data_dict(root_dir, save_data):
         stim_sessions = []
         for session_folder in session_dirs:
             if bird in session_folder:
-                session_ID = session_folder[-6:]
+                parts = session_folder.split('_')
+                session_ID = parts[1]
                 all_sessions.append(session_ID)
                 if session_ID not in data_dict[bird].keys():
                     data_dict[bird][session_ID] = {}

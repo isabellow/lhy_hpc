@@ -42,6 +42,61 @@ def get_pre_stim_spikes(stim_times, spike_id, spike_t, sampling_rate=30000):
     
     return pre_stim_spikes
 
+
+def get_near_stim_spikes(stim_times, spike_id, spike_t, hash_start_t=5e-3, hash_end_t=20e-3, sampling_rate=30000):
+    '''
+    Modification of get_pre_stim_spikes to include spikes before stim AND spikes between stim and hash
+    Get the latency of the last spike before each stim for each cell
+    Negative latencies are time between stim and spike AFTER stim event
+
+    Use hash_start_t and hash_end_t (seconds) to define the min and max time between the stim event and the
+    antidromic spikes. Collects the closest spike to the hash start, starting from the end of the previous hash.
+    '''
+    # data params
+    good_clusters = np.unique(spike_id)
+    n_cells = good_clusters.shape[0]
+    n_stim = stim_times.shape[0]
+
+    # define hash bounds in samples
+    hash_start = hash_start_t*sampling_rate
+    hash_end = hash_end_t*sampling_rate
+    
+    # remove spike times more than 1 second before first stim/after last stim
+    start_idx = stim_times[0] - sampling_rate
+    end_idx = stim_times[-1] + sampling_rate
+    spike_id = spike_id[(spike_t >= start_idx) & (spike_t <= end_idx)]
+    spike_t = spike_t[(spike_t >= start_idx) & (spike_t <= end_idx)]
+    
+    # re-align s.t. time 0 is 1 second pre first stim
+    stim_times = stim_times - start_idx
+    spike_t = spike_t - start_idx
+    
+    # get the closest spike time to each stim for every cell
+    near_stim_spikes = np.full((n_cells, n_stim), np.Inf)
+    for i, cell_id in enumerate(good_clusters):
+        prev_stim_t = hash_end
+        all_sp_t = spike_t[spike_id==cell_id]
+        for j, stim_t in enumerate(stim_times):
+            spike_lat = np.Inf
+            
+            # check for pre-stim spikes
+            if any(all_sp_t < stim_t):
+                before_spikes = all_sp_t[(all_sp_t > prev_stim_t) & (all_sp_t < stim_t)]
+                if any(before_spikes):
+                    spike_lat = np.min(stim_t - before_spikes)
+
+            # check for post-stim, pre-hash spikes
+            if any(all_sp_t > stim_t):
+                after_spikes = all_sp_t[(all_sp_t > stim_t) & (all_sp_t < stim_t+hash_start)]
+                if any(after_spikes):
+                    spike_lat = np.min(stim_t - after_spikes)
+
+            # save nearest latency and update previous stim time
+            near_stim_spikes[i, j] = spike_lat
+            prev_stim_t = stim_t + hash_end
+
+    return near_stim_spikes
+
 def one_changepoint_vectors(X, max_col_trial=-1, show_plots=False):
     '''
     Brute force method to find a single change point in a vector.
@@ -149,7 +204,7 @@ def subsample_trials(sorted_lat, # sorted latencies to stim (nearest to furthest
                      collision_thresh=15e-3): # latency past which collisions are possible (seconds)             
     '''
     Get n_trials with spikes near to the stim, ordered from closest to furthest latency.
-    Mix of possible collision trials (defined by collision_thresh) and non-collisions trials 
+    Mix of possible collision trials (defined by collision_thresh) and non-collision trials 
     (defined by min_thresh).
     '''
     # convert thresholds from seconds to samples
