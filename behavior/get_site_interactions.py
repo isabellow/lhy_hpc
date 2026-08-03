@@ -10,9 +10,9 @@ countHexInteractions and parts of runSiteIntGUI from RigControl/arena alignment
 root_dir = "Z:/Isabel/data/lhy_implants/" # locker
 # root_dir = "C:/Users/ilow1/Documents/code/bird_pose_tracking/model_output/" # local - update as needed
 bird_id = 'LMN88'
-session_id = '260714'
-pred_id = '260714'
-session_root = f"{root_dir}{bird_id}/{bird_id}_{session_id}/rec_2/"
+session_id = '260729'
+pred_id = '260729'
+session_root = f"{root_dir}{bird_id}/{bird_id}_{session_id}/"
 
 
 ''' Define paths to models, smoothed keypoints, arena info '''

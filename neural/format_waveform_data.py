@@ -148,7 +148,7 @@ def map_contacts_to_intan(probe, map_file_path):
     assert len(map_idx) == probe.get_contact_count()
 
     # map intan channel index to probe contact
-    intan_ch_idx = ch_map["Intan channel"].to_numpy()
+    intan_ch_idx = ch_map["Intan Channel"].to_numpy()
     intan_ch_idx = intan_ch_idx[map_idx]
     contact_sort = np.argsort(intan_ch_idx)
     

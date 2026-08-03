@@ -3,11 +3,11 @@
 %% Set file paths
 addpath(genpath('C:\Users\ilow1\Documents\code\lhy_hpc\utils\')) % functions to read Intan files
 bird_id = 'LMN88';
-session_date = '260714';
+session_date = '260729';
 % session_root = ['Z:\Isabel\data\hpc_implants\', bird_id, '\'];
 session_root = ['Z:\Isabel\data\lhy_implants\', bird_id, '\'];
-session_dir = [bird_id, '_', session_date '\rec_2\'];
-ephys_dir = 'LMN88_260714_144143\';
+session_dir = [bird_id, '_', session_date '\'];
+ephys_dir = 'LMN88_260729_110757\';
 
 data_dir = fullfile(fileparts(session_root), [session_dir, ephys_dir]);
 
@@ -24,7 +24,7 @@ mkdir(save_dir)
 frame_rate = 50;
 start_frame_idx = 0*frame_rate + 1; % first frame to keep
 % end_frame_idx = ((2*60 + 20)*60 + 19)*50; % number of frames to keep
-end_frame_idx = 180468;
+end_frame_idx = 539984;
 
 %% load the frame times from Intan
 % Get the digital input (frame times on dig in ch1)
@@ -48,12 +48,12 @@ frame_dt = (diff(frame_starts)) / header.sample_rate;
 disp(unique(round(frame_dt, 2)))
 
 %% Trim the frame times and convert to seconds
-frame_starts = frame_starts(start_frame_idx+1:end_frame_idx);
-frame_ends = frame_ends(start_frame_idx+1:end_frame_idx);
+frame_starts = frame_starts(start_frame_idx:end_frame_idx);
+frame_ends = frame_ends(start_frame_idx:end_frame_idx);
 framet = frame_starts / header.sample_rate;
 
 %% save to a numpy array
 writeNPY(framet, fullfile(save_dir, save_file_name));
-save(fullfile(save_dir, 'intan_info.mat'), 'header')
+save(fullfile(data_dir, 'intan_info.mat'), 'header')
 
 
