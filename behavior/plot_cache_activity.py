@@ -19,13 +19,13 @@ from scipy.ndimage import gaussian_filter1d
 plot cache-aligned activity for significantly suppressed and enhanced cells
 '''
 ''' File Paths '''
-root_dir = "Z:/Isabel/data/hpc_implants/"
+root_dir = "Z:/Isabel/data/lhy_implants/"
 save_figs_dir = f"../figures/basic_neural_analysis/"
-data_file = f"{root_dir}stim_session_data.npy"
+data_file = f"{root_dir}good_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
 
 ''' Data params '''
-bird = 'AMB154' # update as needed
+bird = 'LMN88' # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
 fps = 50 # Hz
@@ -159,14 +159,15 @@ for session_id in behavior_sessions:
 
     cell_filt_idx = high_fr & stim_idx_cell & excitatory_idx
     
-    spike_fr = spike_fr[cell_filt_idx]
-    spike_bool = spike_bool[cell_filt_idx]
-    avg_firing_rate = avg_firing_rate[cell_filt_idx]
+    # spike_fr = spike_fr[cell_filt_idx]
+    # spike_bool = spike_bool[cell_filt_idx]
+    # avg_firing_rate = avg_firing_rate[cell_filt_idx]
     n_cells = spike_fr.shape[0]
 
     # get cache-responsiveness
-    cache_modulated = data_dict[bird][session_id]['barcode_dict']['cache_modulated']
-    cache_modulated_filt = cache_modulated[cell_filt_idx]
+    cache_modulated_filt = data_dict[bird][session_id]['barcode_dict']['cache_modulated']
+    # cache_modulated = np.ones(n_cells).astype(bool)
+    # cache_modulated_filt = cache_modulated[cell_filt_idx]
     cache_up_bool = cache_modulated_filt == 1
     cache_down_bool = cache_modulated_filt == -1
     print(f'{np.sum(cache_up_bool)} cache up and {np.sum(cache_down_bool)} cache down cells')
@@ -222,7 +223,7 @@ for session_id in behavior_sessions:
     cache_up_idx = np.where(cache_up_bool)[0]
     cache_down_idx = np.where(cache_down_bool)[0]
     event_tuned_idx = np.append(cache_up_idx, cache_down_idx)
-    event_tuned_idx = cache_up_idx
+    # event_tuned_idx = cache_up_idx
 
     ''' Plot '''
     # create figure once and reuse across cells (clear between cells)
@@ -367,7 +368,7 @@ for session_id in behavior_sessions:
             save_subfolder = f'{save_folder}/cache_up/'
             os.makedirs(save_subfolder, exist_ok=True)
         else:
-            save_subfolder = f'{save_folder}/cache_up/'
+            save_subfolder = f'{save_folder}/cache_down/'
             os.makedirs(save_subfolder, exist_ok=True)
 
         f.savefig(f'{save_subfolder}/{session_id}_cache_ret_cell{cell_id}.png',

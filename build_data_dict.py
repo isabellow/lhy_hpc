@@ -50,7 +50,15 @@ Order of operations:
         optionally 'channel_pos' (step 3, if proj_only=True) # todo check if also needs stim_resp_idx
     
     data_dict[bird][session]['barcode_dict'] 
-        (cache/retrieve/visit population vectors + locations, active_cache_frac)
+        (cache/retrieve/visit population vectors + locations)
+
+7. collect_cache_activity()
+    -> ported from neural/shuffle_cache_activity.py
+    -> needs: 'preprocessed_data', 'all_sessions' (step 1), 'waveform_props' (step 2),
+        aligned_spikes.npy (step 4)
+
+    data_dict[bird][session]['barcode_dict']
+        adds: active_cache_frac, shuff_avg_cache, cache_modulated
 
 Params:
 -------
@@ -456,8 +464,6 @@ def collect_population_vectors(data_dict, bird_ids, root_dir, arena_dir, arena_i
             spike_frame = np.load(f'{data_dir}aligned_spikes.npy')
             n_cells, n_frames = spike_frame.shape
             inst_firing_rate = spike_frame / dt
-            waveform_props = data_dict[bird][session_id]['waveform_props']
-            avg_firing_rate = 10 ** waveform_props[2]
 
             # get event onsets, offsets, and perch ids
             seed_struct, count_data = load_behavior_data(data_dir)
@@ -477,25 +483,10 @@ def collect_population_vectors(data_dict, bird_ids, root_dir, arena_dir, arena_i
             ret_loc = np.asarray([perch_loc[r] for r in ret_ids]).reshape(n_retrieve, 2)
             visit_loc = np.asarray([perch_loc[v] for v in visit_ids]).reshape(n_visits, 2)
 
-            # get average cache activity
+            # set the window for long events 
+            long_thresh_frames = long_thresh / dt
             long_window = int(long_thresh / 2 / dt)
-            avg_cache = np.zeros((n_cells, n_caches))
-            for i, (cache_on, cache_off) in enumerate(zip(cache_onsets, cache_offsets)):
-                if cache_off - cache_on < long_thresh:
-                    spike_count = np.sum(spike_frame[:, cache_on:cache_off], axis=1)
-                    occupancy = dt * (cache_off - cache_on)
-                    avg_cache[:, i] = spike_count / occupancy
-                else:
-                    begin_count = np.sum(spike_frame[:, cache_on:cache_on + long_window], axis=1)
-                    end_count = np.sum(spike_frame[:, cache_off - long_window:cache_off], axis=1)
-                    avg_cache[:, i] = (begin_count + end_count) / long_thresh
-
-            # was activity > average for each cache/cell?
-            active_cache = np.zeros_like(avg_cache)
-            for c_idx in range(n_cells):
-                active_cache[c_idx] = avg_cache[c_idx] > avg_firing_rate[c_idx]
-            active_cache_frac = np.sum(active_cache, axis=1) / n_caches
-
+            
             # get the normalized firing rate for each cell
             moving_avg_fr = np.zeros_like(inst_firing_rate)
             for cell in range(n_cells):
@@ -509,7 +500,7 @@ def collect_population_vectors(data_dict, bird_ids, root_dir, arena_dir, arena_i
             def _vectors(onsets, offsets, n_events):
                 vecs = np.zeros((n_events, n_cells))
                 for i, (s, e) in enumerate(zip(onsets, offsets)):
-                    if e - s < long_thresh:
+                    if e - s < long_thresh_frames:
                         vecs[i] = np.mean(norm_fr[:, s:e], axis=1)
                     else:
                         activity = np.column_stack((norm_fr[:, s:s + long_window], norm_fr[:, e - long_window:e]))
@@ -519,7 +510,7 @@ def collect_population_vectors(data_dict, bird_ids, root_dir, arena_dir, arena_i
             cache_vectors_raw = _vectors(cache_onsets, cache_offsets, n_caches)
             ret_vectors_raw = _vectors(ret_onsets, ret_offsets, n_retrieve)
 
-            # optionally filter by stim response
+            # optionally filter by stim response - todo
             if proj_only:
                 stim_idx_cell = idx_cells_by_stim(data_dict, bird, session_id)
                 visit_vectors_raw = visit_vectors_raw[:, stim_idx_cell]
@@ -546,12 +537,154 @@ def collect_population_vectors(data_dict, bird_ids, root_dir, arena_dir, arena_i
             barcode_dict.update({
                 'cache_vectors': cache_vectors, 'retrieve_vectors': retrieve_vectors, 'visit_vectors': visit_vectors,
                 'cache_loc': cache_loc, 'retrieve_loc': ret_loc, 'visit_loc': visit_loc,
-                'active_cache_frac': active_cache_frac,
             })
             data_dict[bird][session_id]['barcode_dict'] = barcode_dict
 
     return data_dict
 
+# ---------------------------------------------------------------------------
+# Step 7: shuffled cache activity / cache modulation (ported from neural/shuffle_cache_activity.py)
+# ---------------------------------------------------------------------------
+def collect_cache_shuffle_activity(data_dict, bird_ids, root_dir, overwrite=False,
+                                    n_shuffles=1000, long_thresh=2, fps=50):
+    '''
+    Circularly permute cache times relative to neural data and recompute cache
+    activity n_shuffles times, to get a null distribution of active_cache_frac
+    per cell.
+
+    Select a random number of frames, from 0 to n_frames with replacement,
+    to shift the cache onset/offset times by. If the new "cache" extends past
+    the beginning or end of the session, wrap activity around.
+
+    -> needs: 'preprocessed_data', 'all_sessions' (step 1),
+        'waveform_props' (step 2), aligned_spikes.npy (step 4)
+
+    data_dict[bird][session_id]['barcode_dict']['active_cache_frac'],
+        ['shuff_avg_cache'], ['cache_modulated']
+        (cache_modulated: -1 = significantly suppressed, 1 = significantly
+        enhanced, 0 = no change, relative to the shuffled null distribution)
+
+    NOTE: this is the sole place active_cache_frac is computed -- it is not
+    computed in collect_population_vectors (step 6).
+    '''
+    from format_behavior_data import load_behavior_data, get_caches_refined
+
+    dt = 1 / fps
+    long_thresh_frames = long_thresh / dt
+    long_window = int(long_thresh / 2 / dt)  # frames
+
+    for bird in bird_ids:
+        print(f'\ncollecting shuffled cache activity for {bird}')
+        for session_id in data_dict[bird]['all_sessions']:
+            if (not overwrite) and ('cache_modulated' in data_dict[bird][session_id].get('barcode_dict', {})):
+                continue
+            preprocessed = data_dict[bird][session_id]['preprocessed_data']
+            if not (('behavior' in preprocessed) and ('ephys' in preprocessed)):
+                continue
+            if 'waveform_props' not in data_dict[bird][session_id]:
+                print(f'  skipping {bird}_{session_id}: missing waveform_props '
+                      f'(run collect_waveform_data first)')
+                continue
+
+            print(f'  {bird}_{session_id}')
+
+            # set paths
+            session_dir = f"{root_dir}{bird}/{bird}_{session_id}/"
+            data_dir = f"{session_dir}/behavior_data/"
+
+            # load spike times and get firing rate per cell
+            spike_frame = np.load(f'{data_dir}aligned_spikes.npy')
+            n_cells, n_frames = spike_frame.shape
+            waveform_props = data_dict[bird][session_id]['waveform_props']
+            avg_firing_rate = 10 ** waveform_props[2]
+
+            # get event onsets, offsets, and perch ids
+            seed_struct, count_data = load_behavior_data(data_dir)
+            cache_onsets, cache_offsets, cache_ids = get_caches_refined(count_data, seed_struct, n_frames)
+            n_caches = cache_onsets.shape[0]
+            if n_caches == 0:
+                print(f'    no caches found, skipping')
+                continue
+
+            # get average cache activity for real cache times
+            avg_cache = np.zeros((n_cells, n_caches))
+            for i, (cache_on, cache_off) in enumerate(zip(cache_onsets, cache_offsets)):
+                if cache_off - cache_on < long_thresh_frames:
+                    spike_count = np.sum(spike_frame[:, cache_on:cache_off], axis=1)
+                    occupancy = dt * (cache_off - cache_on)
+                    avg_cache[:, i] = spike_count / occupancy
+                else:
+                    begin_count = np.sum(spike_frame[:, cache_on:cache_on + long_window], axis=1)
+                    end_count = np.sum(spike_frame[:, cache_off - long_window:cache_off], axis=1)
+                    avg_cache[:, i] = (begin_count + end_count) / long_thresh
+
+            # fraction of caches w/ FR > session avg
+            active_cache = np.zeros_like(avg_cache)
+            for c_idx in range(n_cells):
+                active_cache[c_idx] = avg_cache[c_idx] > avg_firing_rate[c_idx]
+            active_cache_frac = np.sum(active_cache, axis=1) / n_caches
+
+            # n frames to shift by, for each shuffle
+            frame_shifts = np.random.choice(np.arange(n_frames), size=n_shuffles)
+            shuff_onsets = np.zeros((n_caches, n_shuffles)).astype(int)
+            shuff_offsets = np.zeros((n_caches, n_shuffles)).astype(int)
+            for cache_idx, (cache_on, cache_off) in enumerate(zip(cache_onsets, cache_offsets)):
+                shuff_onsets[cache_idx] = cache_on + frame_shifts
+                shuff_offsets[cache_idx] = cache_off + frame_shifts
+
+            # get average activity during each shuffled ("fake") cache window
+            shuff_avg_cache = np.zeros((n_cells, n_caches, n_shuffles))
+            for shuff_idx in range(n_shuffles):
+                shuff_ons = shuff_onsets[:, shuff_idx]
+                shuff_offs = shuff_offsets[:, shuff_idx]
+
+                for cache_idx, (cache_on, cache_off) in enumerate(zip(shuff_ons, shuff_offs)):
+                    if cache_on > n_frames:
+                        cache_on = cache_on - n_frames
+                        cache_off = cache_off - n_frames
+                        spike_frame_cache = spike_frame[:, cache_on:cache_off]
+                    elif cache_off > n_frames:
+                        spike_frame_start = spike_frame[:, cache_on:]
+                        spike_frame_end = spike_frame[:, :(cache_off - n_frames)]
+                        spike_frame_cache = np.column_stack((spike_frame_start, spike_frame_end))
+                    else:
+                        spike_frame_cache = spike_frame[:, cache_on:cache_off]
+
+                    if cache_off - cache_on < long_thresh_frames:
+                        spike_count = np.sum(spike_frame_cache, axis=1)
+                        occupancy = dt * (cache_off - cache_on)
+                        shuff_avg_cache[:, cache_idx, shuff_idx] = spike_count / occupancy
+                    else:
+                        begin_count = np.sum(spike_frame_cache[:, :long_window], axis=1)
+                        end_count = np.sum(spike_frame_cache[:, long_window:], axis=1)
+                        spike_count = begin_count + end_count
+                        shuff_avg_cache[:, cache_idx, shuff_idx] = spike_count / long_thresh
+
+            # fraction of shuffled caches w/ FR > session avg
+            active_cache_shuff = np.zeros_like(shuff_avg_cache)
+            for c_idx in range(n_cells):
+                active_cache_shuff[c_idx] = shuff_avg_cache[c_idx] > avg_firing_rate[c_idx]
+            active_cache_frac_shuff = np.sum(active_cache_shuff, axis=1) / n_caches
+
+            # compare real vs. shuffled: -1 = sig suppressed, 1 = sig enhanced, 0 = no change
+            cache_modulated = np.zeros(n_cells).astype(int)
+            for c_idx in range(n_cells):
+                pcts = np.percentile(active_cache_frac_shuff[c_idx], [5, 95])
+                if active_cache_frac[c_idx] < pcts[0]:
+                    cache_modulated[c_idx] = -1
+                elif active_cache_frac[c_idx] > pcts[1]:
+                    cache_modulated[c_idx] = 1
+
+            # save everything
+            barcode_dict = data_dict[bird][session_id].get('barcode_dict', {})
+            barcode_dict.update({
+                'active_cache_frac': active_cache_frac,
+                'shuff_avg_cache': shuff_avg_cache,
+                'cache_modulated': cache_modulated,
+            })
+            data_dict[bird][session_id]['barcode_dict'] = barcode_dict
+
+    return data_dict
 
 # ---------------------------------------------------------------------------
 # Build or update the data dictionary
@@ -588,6 +721,10 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
         print("\n=== population vectors ===")
         data_dict = collect_population_vectors(data_dict, bird_ids, ROOT_DIR, ARENA_DIR, ARENA_ITEMS_FILE,
                                                 overwrite=overwrite)
+        np.save(DATA_FILE, data_dict)
+
+        print("\n=== shuffled cache activity / cache modulation ===")
+        data_dict = collect_cache_shuffle_activity(data_dict, bird_ids, ROOT_DIR, overwrite=overwrite)
         np.save(DATA_FILE, data_dict)
 
     print(f"\nDone. Saved to {DATA_FILE}")

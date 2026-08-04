@@ -92,8 +92,12 @@ WAVEFORM_UV_PER_UNIT = 1.0
 # it keeps its size and its clearance whatever the canvas height turns out to
 # be.  x0 matches GRID_LEFT so the inset lines up with the panels underneath.
 WAVEFORM_X0, WAVEFORM_W = 0.075, 0.135
-WAVEFORM_TITLE_TOP_PTS = 16      # from the top of the figure
-WAVEFORM_H_PTS = 62
+WAVEFORM_TITLE_TOP_PTS = 14      # from the top of the figure
+WAVEFORM_H_PTS = 52
+
+# Sampling rate of the raw ephys, used only to sanity-check how many samples a
+# stored waveform should have (spkDur seconds x this rate).
+EXPECTED_SAMPLE_RATE = 30000.0
 WAVEFORM_LW = 1.7
 # Displayed slice of the waveform, in ms relative to the aligned peak
 # (spkOffset).  Most units settle within ~0.3 ms of the peak, so a 1.5 ms
@@ -154,14 +158,17 @@ FEEDER_COLORS = ["xkcd:saffron", "xkcd:green", "xkcd:scarlet", "xkcd:blue"]
 # Panel geometry.  Heights are in points rather than gridspec ratios so that
 # labels keep their clearance whatever size the Tk canvas ends up being.
 GRID_LEFT, GRID_RIGHT = 0.075, 0.985
-TOP_BAND_PTS = 127         # header + waveform inset + row-0 panel titles
+TOP_BAND_PTS = 112         # header + waveform inset + row-0 panel titles
 BOTTOM_PTS = 40            # bottom row's tuning-curve ticks + x label
 COL_GAP_FRAC = 0.060
-PANEL_BEAK_PTS = 68        # beak trajectory strip
-PANEL_PSTH_PTS = 74        # tuning curve
-RASTER_XLABEL_PTS = 38     # under the raster: tick labels + x label
+# Preferred heights, and the smallest each may shrink to on a short window.
+# When space is tight all three shrink together toward their minimums rather
+# than one of them absorbing the whole squeeze.
+PANEL_BEAK_PTS, PANEL_BEAK_MIN_PTS = 68, 26        # beak trajectory strip
+PANEL_RASTER_PTS, PANEL_RASTER_MIN_PTS = 110, 45   # raster
+PANEL_PSTH_PTS, PANEL_PSTH_MIN_PTS = 74, 34        # tuning curve
+RASTER_XLABEL_PTS = 38     # under the raster: tick labels + x label (fixed)
 ROW_GAP_PTS = 48           # between the two rows of panels
-PANEL_MIN_RASTER_PTS = 55
 
 # Rotation for the occupied/empty group labels on the raster y axis
 GROUP_LABEL_ROTATION = 90
@@ -236,6 +243,144 @@ def loadmat_struct(path: str) -> dict:
 
     return {k: _mat_to_dict(v) for k, v in raw.items()
             if not k.startswith("__")}
+
+
+def _scalar(d: dict, key: str) -> float:
+    """First element of a field, as a float (0.0 when absent)."""
+    if key not in d:
+        return 0.0
+    v = np.atleast_1d(np.asarray(d[key], dtype=float)).ravel()
+    return float(v[0]) if v.size else 0.0
+
+
+def _first_len(d: dict, keys: Sequence[str]) -> Optional[int]:
+    """Length of the first per-unit field present, i.e. the number of units."""
+    for k in keys:
+        if k in d:
+            v = np.atleast_1d(np.asarray(d[k])).ravel()
+            if v.size:
+                return int(v.size)
+    return None
+
+
+def _orient_waveforms_3d(a: np.ndarray, n_units: int,
+                         n_samp: Optional[int], max_site: int
+                         ) -> Tuple[Optional[np.ndarray], Optional[str]]:
+    """
+    Reorder waveFormsMean to (n_cells, n_channels, n_timepoints).
+
+    MATLAB stores it as (n_timepoints, n_channels, n_cells), so the usual
+    answer is transpose(2, 1, 0) -- the same thing the lab's
+    get_waveform_params() does.  The axes are resolved explicitly rather than
+    assumed, because a silently transposed array produces a plot that looks
+    like noise instead of raising anything.
+    """
+    shp = a.shape
+    unit_axes = [i for i in range(3) if shp[i] == n_units]
+    if not unit_axes:
+        return None, (f"no axis has length n_units={n_units}")
+    # MATLAB puts cells last, so prefer axis 2 when the length is ambiguous
+    unit_ax = 2 if 2 in unit_axes else unit_axes[0]
+
+    rest = [i for i in range(3) if i != unit_ax]
+    samp_ax = None
+    if n_samp:
+        hit = [i for i in rest if shp[i] == n_samp]
+        if hit:
+            samp_ax = hit[0]
+    if samp_ax is None:
+        # the channel axis has to be able to hold max_site
+        ok = [i for i in rest if shp[i] >= max_site]
+        if len(ok) == 1:
+            samp_ax = [i for i in rest if i != ok[0]][0]
+        else:
+            # fall back to MATLAB's order: timepoints first
+            samp_ax = rest[0]
+    chan_ax = [i for i in rest if i != samp_ax][0]
+
+    if shp[chan_ax] < max_site:
+        return None, (f"channel axis of length {shp[chan_ax]} cannot hold "
+                      f"max_site={max_site}")
+    return np.transpose(a, (unit_ax, chan_ax, samp_ax)), None
+
+
+def _orient_mxwf(m: np.ndarray, n_units: Optional[int],
+                 n_samp: Optional[int]) -> Tuple[np.ndarray, bool]:
+    """Return mxWF as (n_units, n_samples), flipping it if it arrived rotated."""
+    if n_units:
+        if m.shape[0] == n_units and m.shape[1] != n_units:
+            return m, False
+        if m.shape[1] == n_units and m.shape[0] != n_units:
+            return m.T, True
+    if n_samp:
+        if m.shape[1] == n_samp:
+            return m, False
+        if m.shape[0] == n_samp:
+            return m.T, True
+    return m, False
+
+
+def inspect_waveform_file(path: str) -> str:
+    """Human-readable dump of a waveformStruct.mat, for debugging layouts."""
+    mat = loadmat_struct(path)
+    out = [f"{path}", ""]
+    for name, v in mat.items():
+        if not isinstance(v, dict):
+            continue
+        out.append(f"struct '{name}':")
+        for f, val in v.items():
+            arr = np.asarray(val)
+            out.append(f"    {f:16s} dtype={str(arr.dtype):10s} shape={arr.shape}")
+        wv = v
+        if "mxWF" not in wv and "waveFormsMean" not in wv:
+            continue
+        n_units = _first_len(wv, ("goodIDs", "meanRate", "max_site", "nSpikes"))
+        dur, off = _scalar(wv, "spkDur"), _scalar(wv, "spkOffset")
+        hint = int(round(dur * EXPECTED_SAMPLE_RATE)) if dur else None
+        out += ["",
+                f"    inferred n_units      : {n_units}",
+                f"    spkDur / spkOffset    : {dur} s / {off} s",
+                f"    expected n_samples    : {hint} "
+                f"(at {EXPECTED_SAMPLE_RATE:g} Hz)"]
+        sites = np.atleast_1d(np.asarray(wv.get("max_site", []))).ravel()
+        if sites.size:
+            out.append(f"    max_site range        : {sites.min()}-{sites.max()}")
+        if "waveFormsMean" in wv and sites.size and n_units:
+            a = np.asarray(wv["waveFormsMean"], dtype=float)
+            if a.ndim == 3:
+                arr, err = _orient_waveforms_3d(a, n_units, hint,
+                                                int(sites.astype(int).max()))
+                if err:
+                    out.append(f"    waveFormsMean         : UNRESOLVED ({err})")
+                else:
+                    out.append(f"    waveFormsMean {a.shape} -> "
+                               f"(cells, channels, samples) {arr.shape}")
+                    idx = np.clip(sites.astype(int) - 1, 0, arr.shape[1] - 1)
+                    wf = np.stack([arr[u, idx[u]] for u in range(n_units)])
+                    out += _peak_report(wf, dur, off, "    from waveFormsMean")
+        if "mxWF" in wv:
+            m = np.atleast_2d(np.asarray(wv["mxWF"], dtype=float))
+            wf, flip = _orient_mxwf(m, n_units, hint)
+            out.append(f"    mxWF {m.shape} -> (units, samples) {wf.shape}"
+                       f"{'  [transposed]' if flip else ''}")
+            out += _peak_report(wf, dur, off, "    from mxWF")
+        out.append("")
+    return "\n".join(out)
+
+
+def _peak_report(wf: np.ndarray, dur: float, off: float, tag: str) -> List[str]:
+    n_samp = wf.shape[1]
+    lines = [f"{tag}: amplitude p2p median "
+             f"{np.median(wf.max(axis=1) - wf.min(axis=1)):.1f}"]
+    if dur > 0 and off:
+        expect = int(round(off / dur * n_samp))
+        peaks = np.argmax(np.abs(wf), axis=1)
+        tol = max(3, int(0.03 * n_samp))
+        frac = float(np.mean(np.abs(peaks - expect) <= tol))
+        verdict = "LOOKS CORRECT" if frac >= 0.5 else "LOOKS WRONG"
+        lines.append(f"{tag}: {frac * 100:.0f}% peak at sample {expect}"
+                     f"/{n_samp}  -> {verdict}")
+    return lines
 
 
 def _int_arr(d: dict, key: str) -> np.ndarray:
@@ -423,14 +568,18 @@ class SessionData:
         """
         Mean waveform per unit from waveformStruct.mat.
 
-        Uses `mxWF` (the waveform on each unit's peak site) when present,
-        otherwise slices `waveFormsMean` (samples x channels x units) at the
-        1-indexed `max_site`.  The time base comes from `spkDur` (total
-        window, s) and `spkOffset` (time of the aligned peak, s).
+        MATLAB writes `waveFormsMean` as (n_timepoints, n_channels, n_cells)
+        and scipy preserves that order, which is why the lab's own
+        get_waveform_params() does np.transpose(..., (2, 1, 0)) to reach
+        (n_cells, n_channels, n_timepoints).  We follow the same path and take
+        each unit's peak channel via the 1-indexed `max_site`.
+
+        `mxWF` is only used as a fallback, because its orientation varies
+        between pipeline versions.  Whenever both are present they are
+        cross-checked against each other.
         """
         mat = loadmat_struct(waveform_path)
 
-        # the top-level variable name varies between pipelines
         wv = None
         for v in mat.values():
             if isinstance(v, dict) and ("mxWF" in v or "waveFormsMean" in v):
@@ -440,26 +589,74 @@ class SessionData:
             raise ValueError(
                 f"{os.path.basename(waveform_path)} contains no struct with "
                 "'mxWF' or 'waveFormsMean'.")
+        self._wv = wv
 
+        # ── how many units, and how long should a waveform be? ───────────
+        n_units = _first_len(wv, ("goodIDs", "meanRate", "max_site", "nSpikes"))
+        dur = _scalar(wv, "spkDur")
+        off = _scalar(wv, "spkOffset")
+        n_samp_hint = int(round(dur * EXPECTED_SAMPLE_RATE)) if dur else None
+
+        sites = np.atleast_1d(np.asarray(wv.get("max_site", []))).ravel()
+        sites = sites.astype(int) if sites.size else None
+        if n_units is None and sites is not None:
+            n_units = sites.size
+
+        wf_from_all, wf_from_mx = None, None
+
+        # ── preferred: waveFormsMean at each unit's peak channel ─────────
+        if "waveFormsMean" in wv and sites is not None and n_units:
+            a = np.asarray(wv["waveFormsMean"], dtype=float)
+            if a.ndim == 3:
+                arr, err = _orient_waveforms_3d(a, n_units, n_samp_hint,
+                                                int(sites.max()))
+                if err:
+                    self.notes.append(f"waveFormsMean {a.shape}: {err}")
+                else:
+                    idx = np.clip(sites - 1, 0, arr.shape[1] - 1)
+                    wf_from_all = np.stack([arr[u, idx[u]]
+                                            for u in range(n_units)])
+
+        # ── fallback / cross-check: mxWF ─────────────────────────────────
         if "mxWF" in wv:
-            wf = np.atleast_2d(np.asarray(wv["mxWF"], dtype=float))
-        else:
-            allwf = np.asarray(wv["waveFormsMean"], dtype=float)
-            sites = np.atleast_1d(np.asarray(wv.get("max_site", []))).astype(int)
-            if allwf.ndim != 3 or sites.size != allwf.shape[2]:
-                raise ValueError("waveFormsMean / max_site have unexpected shapes.")
-            wf = np.stack([allwf[:, s - 1, u]        # max_site is 1-indexed
-                           for u, s in enumerate(sites)])
+            m = np.atleast_2d(np.asarray(wv["mxWF"], dtype=float))
+            wf_from_mx, flipped = _orient_mxwf(m, n_units, n_samp_hint)
+            if flipped:
+                self.notes.append(
+                    f"mxWF was stored as {m.shape} (samples x units) and has "
+                    "been transposed to units x samples.")
+
+        wf = wf_from_all if wf_from_all is not None else wf_from_mx
+        if wf is None:
+            raise ValueError(
+                "Could not work out the layout of the waveform arrays in "
+                f"{os.path.basename(waveform_path)}. Run\n"
+                f"    python {os.path.basename(__file__)} "
+                "--inspect-waveforms <file>\nand send the output.")
+
+        # disagreement means one of the two was read with the wrong layout
+        if wf_from_all is not None and wf_from_mx is not None:
+            if wf_from_all.shape == wf_from_mx.shape:
+                num = np.linalg.norm(wf_from_all - wf_from_mx)
+                den = np.linalg.norm(wf_from_all) + 1e-12
+                if num / den > 0.05:
+                    self.notes.append(
+                        "mxWF and waveFormsMean disagree; using waveFormsMean "
+                        "(n_timepoints x n_channels x n_cells), which matches "
+                        "the lab's get_waveform_params().")
+            else:
+                self.notes.append(
+                    f"mxWF {wf_from_mx.shape} and the waveform extracted from "
+                    f"waveFormsMean {wf_from_all.shape} have different shapes; "
+                    "using waveFormsMean.")
 
         wf = wf * WAVEFORM_UV_PER_UNIT
         n_units, n_samp = wf.shape
 
-        dur = float(np.asarray(wv.get("spkDur", 0.0)).ravel()[0]) if "spkDur" in wv else 0.0
-        off = float(np.asarray(wv.get("spkOffset", 0.0)).ravel()[0]) if "spkOffset" in wv else 0.0
-        if dur > 0:
+        # ── time base ────────────────────────────────────────────────────
+        if dur and dur > 0:
             self.wf_time_ms = (np.arange(n_samp) / (n_samp / dur) - off) * 1000.0
         else:
-            # no timing info: fall back to samples, centred on the peak
             self.notes.append("waveformStruct has no spkDur; the waveform "
                               "time scale bar is in samples, not ms.")
             self.wf_time_ms = np.arange(n_samp) - n_samp // 2
@@ -472,12 +669,29 @@ class SessionData:
             self.wf_mean_rate = np.atleast_1d(
                 np.asarray(wv["meanRate"], dtype=float)).ravel()
 
+        # ── does this actually look like a set of spike waveforms? ───────
+        if n_samp_hint and abs(n_samp - n_samp_hint) > 2:
+            self.notes.append(
+                f"Waveforms have {n_samp} samples but spkDur implies about "
+                f"{n_samp_hint} at {EXPECTED_SAMPLE_RATE:g} Hz. The sample "
+                "axis may have been picked up wrongly.")
+        if dur and dur > 0 and off:
+            expect = int(round(off / dur * n_samp))
+            peaks = np.argmax(np.abs(wf), axis=1)
+            tol = max(3, int(0.03 * n_samp))
+            frac = float(np.mean(np.abs(peaks - expect) <= tol))
+            if frac < 0.5:
+                self.notes.append(
+                    f"Only {frac * 100:.0f}% of waveforms peak at spkOffset "
+                    f"(sample {expect} of {n_samp}). They are probably being "
+                    "read with the wrong array layout - run "
+                    "--inspect-waveforms on the file and send the output.")
+
         if n_units != self.n_cells:
             self.notes.append(
                 f"waveformStruct has {n_units} units but aligned_spikes has "
                 f"{self.n_cells} cells. Waveforms are matched by row order, so "
                 "cells beyond the shorter list will have no waveform shown.")
-
 
     def _adopt_cluster_ids(self) -> None:
         """Use goodIDs as the cell IDs, and sanity-check the row alignment."""
@@ -1233,19 +1447,29 @@ def draw_cell(fig: Figure, sess: SessionData, cell_id: int,
     row_h = ((grid_top - grid_bottom) - row_gap) / 2.0
     col_w = (GRID_RIGHT - GRID_LEFT - 2 * COL_GAP_FRAC) / 3.0
 
-    beak_h = PANEL_BEAK_PTS / fig_pts
-    psth_h = PANEL_PSTH_PTS / fig_pts
+    # The gap under the raster is fixed -- it holds tick labels and an axis
+    # label, so shrinking it is what caused clipping.  Everything else is
+    # interpolated between its preferred and minimum height according to how
+    # much room the canvas actually has.
     gap_h = RASTER_XLABEL_PTS / fig_pts
-    raster_h = row_h - beak_h - psth_h - gap_h
+    avail_pts = (row_h - gap_h) * fig_pts
 
-    # on a short canvas, give the raster its minimum by squeezing the rest
-    min_raster = PANEL_MIN_RASTER_PTS / fig_pts
-    if raster_h < min_raster:
-        flex = beak_h + psth_h
-        scale = max((flex - (min_raster - raster_h)) / flex, 0.35)
-        beak_h *= scale
-        psth_h *= scale
-        raster_h = max(row_h - beak_h - psth_h - gap_h, 0.01)
+    want = np.array([PANEL_BEAK_PTS, PANEL_RASTER_PTS, PANEL_PSTH_PTS],
+                    dtype=float)
+    least = np.array([PANEL_BEAK_MIN_PTS, PANEL_RASTER_MIN_PTS,
+                      PANEL_PSTH_MIN_PTS], dtype=float)
+
+    if avail_pts >= want.sum():
+        heights = want.copy()
+        heights[1] += avail_pts - want.sum()      # surplus goes to the raster
+    elif avail_pts > least.sum():
+        frac = (avail_pts - least.sum()) / (want.sum() - least.sum())
+        heights = least + frac * (want - least)
+    else:                                          # desperately short canvas
+        heights = least * max(avail_pts / least.sum(), 0.1)
+
+    beak_h, raster_h, psth_h = (heights / fig_pts)
+    raster_h = max(raster_h, 0.005)
 
     psth_axes: Dict[str, plt.Axes] = {}
     psth_max: Dict[str, Optional[float]] = {}
@@ -1401,6 +1625,7 @@ class CellBrowser:
         self.var_feeder_status = tk.StringVar(value="open")
         self.var_status = tk.StringVar(value="Load a session to begin.")
         self.var_cellinfo = tk.StringVar(value="")
+        self.var_loaded = tk.StringVar(value="no session loaded")
 
         # per-event time windows and alignment
         self.win_vars: Dict[str, Dict[str, tk.StringVar]] = {}
@@ -1420,22 +1645,50 @@ class CellBrowser:
     def _build_layout(self):
         root = self.root
 
-        top = ttk.LabelFrame(root, text="Session files", padding=6)
-        top.pack(side="top", fill="x", padx=8, pady=(8, 4))
-        self._build_file_bar(top)
+        # The file panel costs ~110 px of canvas height, which matters a lot on
+        # a 1080p screen, so it can be folded away once a session is loaded.
+        bar = ttk.Frame(root)
+        bar.pack(side="top", fill="x", padx=8, pady=(6, 0))
+        self.var_files_btn = tk.StringVar(value="\u25bc  Session files")
+        ttk.Button(bar, textvariable=self.var_files_btn, width=20,
+                   command=self._toggle_file_panel).pack(side="left")
+        ttk.Label(bar, textvariable=self.var_loaded, foreground=TK_MUTED_FG
+                  ).pack(side="left", padx=10)
+
+        self.file_panel = ttk.LabelFrame(root, text="Session files", padding=6)
+        self.file_panel.pack(side="top", fill="x", padx=8, pady=(2, 4))
+        self._files_visible = True
+        self._build_file_bar(self.file_panel)
 
         status = ttk.Frame(root, padding=(10, 3))
         status.pack(side="bottom", fill="x")
         ttk.Label(status, textvariable=self.var_status,
                   anchor="w").pack(side="left", fill="x", expand=True)
 
-        side = ttk.Frame(root, padding=(8, 4))
+        self.main_area = ttk.Frame(root)
+        self.main_area.pack(side="top", fill="both", expand=True)
+
+        side = ttk.Frame(self.main_area, padding=(8, 4))
         side.pack(side="left", fill="y")
         self._build_sidebar(side)
 
-        plot_frame = ttk.Frame(root, padding=(4, 4))
+        plot_frame = ttk.Frame(self.main_area, padding=(4, 4))
         plot_frame.pack(side="right", fill="both", expand=True)
         self._build_canvas(plot_frame)
+
+    def _toggle_file_panel(self):
+        """Fold the file panel away to give the figure more height."""
+        if self._files_visible:
+            self.file_panel.pack_forget()
+            self.var_files_btn.set("\u25b6  Session files")
+        else:
+            self.file_panel.pack(side="top", fill="x", padx=8, pady=(2, 4),
+                                 before=self.main_area)
+            self.var_files_btn.set("\u25bc  Session files")
+        self._files_visible = not self._files_visible
+        self.root.update_idletasks()
+        self._last_canvas_size = None
+        self.refresh()
 
     def _build_file_bar(self, parent):
         for c in (1, 4):
@@ -1607,7 +1860,11 @@ class CellBrowser:
         self._resize_job = None
         self._last_canvas_size = None
         self._drawing = False
-        self.canvas.get_tk_widget().bind("<Configure>", self._on_canvas_resize)
+        # add="+" is essential: FigureCanvasTkAgg already binds <Configure> to
+        # its own resize handler, and binding without "+" replaces it, leaving
+        # the figure stuck at its construction size while the widget changes.
+        self.canvas.get_tk_widget().bind("<Configure>", self._on_canvas_resize,
+                                         add="+")
 
         self.root.bind("<Left>", lambda e: self.step_cell(-1))
         self.root.bind("<Right>", lambda e: self.step_cell(1))
@@ -1728,6 +1985,11 @@ class CellBrowser:
         if self.sess.notes:
             messagebox.showwarning("Loaded with warnings",
                                    "\n\n".join(self.sess.notes))
+        self.var_loaded.set(
+            f"{self.sess.bird} {self.sess.session_id}  \u2014  "
+            f"{self.sess.n_cells} cells".strip())
+        if self._files_visible:
+            self._toggle_file_panel()
         ids = [int(v) for v in self.sess.cluster_ids]
         self.spin_cell.configure(values=ids)
         if self._cell_id() not in ids:
@@ -1763,6 +2025,11 @@ class CellBrowser:
         """Move to the next/previous cell in the session's ID list."""
         if self.sess is None:
             return
+        self.var_loaded.set(
+            f"{self.sess.bird} {self.sess.session_id}  \u2014  "
+            f"{self.sess.n_cells} cells".strip())
+        if self._files_visible:
+            self._toggle_file_panel()
         ids = [int(v) for v in self.sess.cluster_ids]
         cur = self._cell_id()
         if cur in ids:
@@ -1914,7 +2181,13 @@ def main(argv=None):
                     help="path to waveformStruct.mat (optional)")
     ap.add_argument("--feeder-times", default="",
                     help="feeder open periods in minutes, e.g. '10-20, 65-75'")
+    ap.add_argument("--inspect-waveforms", default="", metavar="FILE",
+                    help="print the layout of a waveformStruct.mat and exit")
     args = ap.parse_args(argv)
+
+    if args.inspect_waveforms:
+        print(inspect_waveform_file(args.inspect_waveforms))
+        return
 
     if not _HAS_TK:
         sys.exit("tkinter is not available in this Python installation. "
