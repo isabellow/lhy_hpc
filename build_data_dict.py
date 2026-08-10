@@ -470,7 +470,7 @@ def collect_population_vectors(data_dict, bird_ids, root_dir, arena_dir, arena_i
             cache_onsets, cache_offsets, cache_ids = get_caches_refined(count_data, seed_struct, n_frames)
             ret_onsets, ret_offsets, ret_ids = get_retrievals_refined(count_data, seed_struct, n_frames)
             visit_onsets, visit_offsets, visit_ids = get_visits_refined(count_data, n_frames)
-            cache_ids, ret_ids, visit_ids = cache_ids - 1, ret_ids - 1, visit_ids - 1
+            cache_ids, ret_ids, visit_ids = cache_ids - 1, ret_ids - 1, visit_ids
 
             # exclude feeder visits
             visit_onsets = visit_onsets[visit_ids < n_sites]
@@ -733,7 +733,7 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
 
 if __name__ == "__main__":
     # Example: add a couple of new birds to an existing (or new) struct
-    build_or_update_session_data(new_bird_ids=None, overwrite=True)
+    build_or_update_session_data(new_bird_ids=['TRQ82'], overwrite=False)
 
 #     # Example: just pick up new sessions for birds already in the dict
 #     build_or_update_session_data(new_bird_ids=None)

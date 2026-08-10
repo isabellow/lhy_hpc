@@ -40,14 +40,6 @@ long_thresh = 2 # seconds for long events
 baseline_window = 30 # minutes for FR moving average
 fps=50 # video frame rate
 
-# for computing/binning distances between perches
-convert_norm_to_cm = 13 * 2.54 # conversion factor normalized coordinates to cm
-perch_dist_bins = np.asarray([0, 0.17, 0.22, 0.35, 0.49, 0.52, 0.69, 0.77, 0.98, np.inf])
-perch_dist_centers = (perch_dist_bins[:-1] + perch_dist_bins[1:]) / 2
-perch_dist_centers[-1] = 1.5
-perch_dist_centers_cm = perch_dist_centers*convert_norm_to_cm
-n_bins = perch_dist_centers.shape[0]
-
 # get the x, y coordinates of each perch center
 arena_data = loadmat(f'{arena_dir}{arena_items_file}', squeeze_me=True)
 n_sites = arena_data["perch_w_site"].shape[0]
@@ -103,7 +95,6 @@ for bird in bird_ids:
         # adjust for pythonic indexing
         cache_ids -= 1
         ret_ids -= 1
-        visit_ids -= 1
 
         # exclude visits to feeder perches
         visit_onsets = visit_onsets[visit_ids < n_sites]

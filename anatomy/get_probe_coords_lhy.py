@@ -455,7 +455,7 @@ def get_raw_anatomy_info(session_info_file, data_dict):
 
     # get N shanks
     probe_info = pd.read_excel(session_info_file, sheet_name='Anatomy', header=0)
-    shank_letter_to_idx = {}
+    shank_id_list = []
     n_shanks_per_bird = {}
     for i, row in probe_info.iterrows():
         bird_shank = row['bird ID']
@@ -463,7 +463,11 @@ def get_raw_anatomy_info(session_info_file, data_dict):
             bird, shank = bird_shank.split(sep='_')
         else:
             bird, shank = bird_shank, 'A'
-        shank_idx = shank_letter_to_idx.setdefault(shank, len(shank_letter_to_idx))
+        if shank in shank_id_list:
+            shank_idx = shank_id_list.index(shank)
+        else:
+            shank_idx = len(shank_id_list)
+            shank_id_list.append(shank)
         n_shanks_per_bird[bird] = shank_idx + 1
 
     # to store anatomy info
@@ -486,7 +490,7 @@ def get_raw_anatomy_info(session_info_file, data_dict):
             bird, shank = bird_shank, 'A'
         if bird not in data_dict:
             continue
-        shank_idx = shank_letter_to_idx[shank]
+        shank_idx = shank_id_list.index(shank)
 
         # ---- measured from histology ----
         # insertion coordinates
@@ -594,9 +598,10 @@ def save_cell_positions(data_dict, root_dir):
             ch_pos, ch_shank_idx, cell_pos, cell_shank_idx = get_channel_cell_pos(
                 session_dir, ks_dir, ephys_dir, insert_coords, tip_coords, depth
             )
+            
             # save everything
-            session_data['channel_pos'] = ch_pos
-            session_data['cell_pos'] = cell_pos
-            session_data['shank_idx'] = cell_shank_idx
+            data_dict[bird][session_id]['channel_pos'] = ch_pos
+            data_dict[bird][session_id]['cell_pos'] = cell_pos
+            data_dict[bird][session_id]['shank_idx'] = cell_shank_idx
 
     return data_dict

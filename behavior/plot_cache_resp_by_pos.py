@@ -163,7 +163,8 @@ gs_kw = dict(hspace=0.1, wspace=0.3)
 f, ax = plt.subplots(2, n_cols, figsize=(3.2 * n_cols, 10), sharey=True, gridspec_kw=gs_kw, squeeze=False)
 
 ylims = [610, -10] # hippocampus
-ylims = [6150, 5450] # lateral hypothalamus
+# ylims = [6150, 5450] # lateral hypothalamus
+ylims = [5810, 4190] # lateral hypothalamus
 
 alpha_pts = 0.8
 size_pts = 6
@@ -240,7 +241,7 @@ for bird in bird_ids:
             ax[row, col].spines['right'].set_visible(False)
             ax[row, col].spines['top'].set_visible(False)
             ax[row, col].spines['bottom'].set_bounds(0, 1)
-            ax[row, col].spines['left'].set_bounds(600, 0)
+            ax[row, col].spines['left'].set_bounds(ylims[0]-10, ylims[1]+10)
             ax[row, col].set_xticks([0, 0.5, 1])
             ax[row, col].set_xticklabels(['0', '0.5', '1'])
 

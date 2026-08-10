@@ -7,6 +7,21 @@ from load_matlab_data import loadmat_sbx
 from scipy.ndimage import gaussian_filter, gaussian_filter1d
 from scipy import stats
 
+"""
+INDEXING NOTE
+------------
+runSiteIntGUI_2.m increments siteNum, feederNum, waterNum and beakPerchNum
+when it writes annotatedSeeds.mat, but leaves perchNum alone. So in every
+count_data loaded here:
+
+    siteNum, feederNum, waterNum, beakPerchNum : 1-INDEXED
+    perchNum                                   : 0-INDEXED
+
+TODO update this somewhere at the root to correct indexing confusion
+(currently everything is patched to work downstream)
+"""
+
+
 ''' Load and format behavior data '''
 def load_behavior_data(data_dir):
     seed_struct = loadmat_sbx(f'{data_dir}annotatedSeeds.mat')['annotatedSeeds']
@@ -129,6 +144,7 @@ def get_caches_refined(count_data, seed_struct, n_total_frames, dt=0.02):
         cache_onsets = np.append(cache_onsets, cache_start)
         cache_offsets = np.append(cache_offsets, cache_end)
 
+    # cache_perch_idx is siteNum, i.e. 1-INDEXED (see module INDEXING NOTE)
     return cache_onsets.astype(int), cache_offsets.astype(int), cache_perch_idx.astype(int)
 
 def get_retrievals_refined(count_data, seed_struct, n_total_frames, dt=0.02):
@@ -191,11 +207,13 @@ def get_retrievals_refined(count_data, seed_struct, n_total_frames, dt=0.02):
         ret_onsets = np.append(ret_onsets, ret_start)
         ret_offsets = np.append(ret_offsets, ret_end)
 
+    # ret_perch_idx is siteNum, i.e. 1-INDEXED (see module INDEXING NOTE)
     return ret_onsets.astype(int), ret_offsets.astype(int), ret_perch_idx.astype(int)
 
-def get_checks_refined(count_data, seed_struct, n_total_frames, dt=0.02):
+def get_checks_refined(count_data, seed_struct, n_total_frames, dt=0.02,
+                        return_keep=False):
     '''
-    Retrievals are site interactions where the contents are unchanged
+    Checks are site interactions where the contents are unchanged
 
     Returns check onset and offset times, 
     as well as the perch ID for each check
@@ -204,6 +222,12 @@ def get_checks_refined(count_data, seed_struct, n_total_frames, dt=0.02):
     - 250 ms before check onset to 250 ms after check offset
     - truncated to avoid other interactions
     - exclude checks > 1.5 sec (approximation of other non-check interactions)
+
+    return_keep : bool
+        also return a boolean mask over the RAW checks (site interactions with
+        no seed change) marking which ones survived the duration cut.  Needed
+        to line other per-check quantities - occupancy, in particular - up with
+        the returned events.
     '''
     # get all site interactions
     all_int_start = count_data['newSite']
@@ -226,7 +250,12 @@ def get_checks_refined(count_data, seed_struct, n_total_frames, dt=0.02):
     t_window = 0.25/dt
     check_onsets = np.asarray([])
     check_offsets = np.asarray([])
-    for cs, ce in zip(check_onsets_raw, check_offsets_raw):
+    # checks longer than 1.5 s are dropped below, so track which raw checks
+    # survive: check_perch_idx was previously returned unfiltered, so it was
+    # longer than the onsets/offsets and every perch ID after the first
+    # dropped check belonged to a different event
+    check_keep = np.zeros(check_onsets_raw.shape[0], dtype=bool)
+    for i, (cs, ce) in enumerate(zip(check_onsets_raw, check_offsets_raw)):
         # create the time window
         check_start = cs - t_window
         check_end = ce + t_window
@@ -254,14 +283,65 @@ def get_checks_refined(count_data, seed_struct, n_total_frames, dt=0.02):
         if (check_end - check_start) > (1.5/dt):
             continue
 
+        check_keep[i] = True
         check_onsets = np.append(check_onsets, check_start)
         check_offsets = np.append(check_offsets, check_end)
 
-    return check_onsets.astype(int), check_offsets.astype(int), check_perch_idx.astype(int)
+    # check_perch_idx is siteNum, i.e. 1-INDEXED (see module INDEXING NOTE)
+    if return_keep:
+        return (check_onsets.astype(int), check_offsets.astype(int),
+                check_perch_idx[check_keep].astype(int), check_keep)
+    return (check_onsets.astype(int), check_offsets.astype(int),
+            check_perch_idx[check_keep].astype(int))
 
-def get_visits_raw(count_data):
+def get_checks_raw(count_data, seed_struct, max_check_dur=1.5, dt=0.02):
+    '''
+    Checks are site interactions where the contents are unchanged, lasting no
+    more than max_check_dur seconds.
+
+    Mirrors get_visits_raw / get_cache_ints / get_retrieve_ints: bare event
+    onset and offset with no padding or truncation, for aligning to the real
+    event boundaries (a raster, an onset/offset PSTH).
+
+    Returns
+    -------
+    check_onsets, check_offsets : int arrays, shape (n_checks,)
+    check_site_idx : int array, shape (n_checks,)
+        0-indexed cache site for each check
+    '''
+    all_int_start = np.asarray(count_data['newSite']).astype(int)
+    all_int_end = np.asarray(count_data['endSite']).astype(int)
+    all_site_num = np.asarray(count_data['siteNum']).astype(int)
+    all_int_changes = np.sum(np.atleast_2d(np.asarray(seed_struct['seedChanges'])), axis=1)
+
+    is_check = all_int_changes == 0
+    short_enough = (all_int_end - all_int_start) <= (max_check_dur / dt)
+    keep = is_check & short_enough
+
+    check_onsets = all_int_start[keep]
+    check_offsets = all_int_end[keep]
+    check_site_idx = all_site_num[keep] - 1        # siteNum is 1-indexed
+
+    return check_onsets.astype(int), check_offsets.astype(int), check_site_idx.astype(int)
+
+
+def get_visits_raw(count_data, exclude_feeders=True,
+                    feeder_perches=np.asarray([84, 85, 86, 87])):
     '''
     Visits are perch interactions without eating or site interaction
+
+    Params
+    ------
+    exclude_feeders : bool
+        exclude visits to feeder perches
+    feeder_perches : array of ints
+        feeder perch ID numbers (as in get_site_interactions.py)
+
+    Returns
+    -------
+    visit_onsets, visit_offsets : int arrays, shape (n_visits,)
+    visit_site_idx : int array, shape (n_visits,)
+        the returned IDs are 0-indexed
     '''
     # get all perch interactions
     all_perch_start = count_data['newPerch']
@@ -280,14 +360,20 @@ def get_visits_raw(count_data):
     # get visits by excluding other interactions
     visits = np.full(n_perches, 1).astype(bool)
     for i, (ps, pe) in enumerate(zip(all_perch_start, all_perch_end)):
+        this_perch = all_perch_idx[i]
+        if exclude_feeders and (this_perch in feeder_perches):
+            visits[i] = False
+            continue
         start_idx = all_non_visit_start > ps
         end_idx = all_non_visit_start < pe
         if any(start_idx & end_idx):
             visits[i] = False        
     visit_onsets = all_perch_start[visits]
     visit_offsets = all_perch_end[visits]
+    visit_site_idx = all_perch_idx[visits]
 
-    return visit_onsets, visit_offsets
+    return (visit_onsets.astype(int), visit_offsets.astype(int),
+            visit_site_idx.astype(int))
 
 def get_visits_refined(count_data, n_total_frames, dt=0.02,
                         exclude_feeders=True, feeder_perches=np.asarray([84, 85, 86, 87])):
@@ -352,6 +438,63 @@ def get_visits_refined(count_data, n_total_frames, dt=0.02,
             visit_offsets = np.append(visit_offsets, visit_end)
 
     return visit_onsets.astype(int), visit_offsets.astype(int), all_perch_idx[visits].astype(int)
+
+
+def get_site_occupancy(count_data, seed_struct, event_onsets, event_site_idx,
+                        use_init_counts=True):
+    '''
+    Was site occupied at the time of each event?
+
+    Params
+    ------
+    count_data : dict
+        interaction data from annotatedSeeds.mat
+    seed_struct : dict
+        the annotated seed struct ('seedChanges', 'initSeedCounts')
+    event_onsets : array, shape (n_events,)
+        onset frame of each event, e.g. from get_checks_raw / get_visits_raw
+    event_site_idx : array, shape (n_events,)
+        0-indexed cache site for each event
+    use_init_counts : bool
+        Include initSeedCounts, so a site that was already baited at the start
+        of the session and never touched counts as occupied.
+        Set False to score occupancy from within-session caching only.
+
+    Returns
+    -------
+    occupied : bool array, shape (n_events,)
+    '''
+    seed_changes = np.atleast_2d(np.asarray(seed_struct['seedChanges']))
+    init_counts = np.atleast_1d(np.asarray(seed_struct['initSeedCounts'], dtype=float))
+    n_sites = seed_changes.shape[1]
+
+    # cumulative seed count in every site as of each site interaction
+    seeds_in_sites = np.cumsum(seed_changes, axis=0).astype(float)
+    if use_init_counts:
+        seeds_in_sites = seeds_in_sites + init_counts
+    else:
+        init_counts = np.zeros(n_sites)
+
+    all_int_start = np.asarray(count_data['newSite']).astype(int)
+    occupied = np.zeros(event_onsets.shape[0], dtype=bool)
+
+    # rank each event against every site interaction's start time, once, rather
+    # than once per event. side='right' places an event that IS itself a site
+    # interaction (a check, whose own onset equals one of these times) after
+    # its own row, so its own zero-change contribution is correctly included.
+    order = np.argsort(all_int_start)
+    int_start_sorted = all_int_start[order]
+    k = np.searchsorted(int_start_sorted, event_onsets, side='right') - 1
+
+    for i, (site, k_i) in enumerate(zip(event_site_idx, k)):
+        if not (0 <= site < n_sites):
+            continue
+        if k_i < 0:
+            occupied[i] = init_counts[site] > 0
+        else:
+            occupied[i] = seeds_in_sites[order[k_i], site] > 0
+
+    return occupied
 
 
 def get_n_seeds(seed_struct):
@@ -427,14 +570,21 @@ def spikes_by_cache(spike_frame, cache_onsets, cache_offsets, cache_window=20, d
     return cache_mat, cache_t_points, cache_ons
 
 
-# def shuffle_cache_activity():
-#     '''
-#     1000 shuffled data points.
+''' Eating '''
+def get_eating_bouts(count_data):
+    '''
+    Beak on feet
 
-#     To generate the shuffle distribution, circularly permute cache times relative to neural spike times.
-#     We used the 5th and 95th percentiles of the shuffled distribution to classify neurons as significantly suppressed or enhanced.
-#     '''
+    Real onset/offset per bout (no padding or truncation)
+    No site index or occupancy
 
+    Returns
+    -------
+    eat_onsets, eat_offsets : int arrays, shape (n_eating_bouts,)
+    '''
+    eat_onsets = np.asarray(count_data['newBeakPerch']).astype(int)
+    eat_offsets = np.asarray(count_data['endBeakPerch']).astype(int)
+    return eat_onsets, eat_offsets
 
 ''' Classify feeder interactions '''
 def get_feeder_ints(count_data, use_beak=True, feeder_perches=np.asarray([84, 85, 86, 87])):
@@ -621,7 +771,10 @@ def classify_feeder_ints(feeder_int_start, feeder_int_end,
     feeder_close_frames = feeder_close_times*60*frame_rate
 
     # classify each interaction as open vs. closed
-    feeder_status = np.full(n_feeder_int, 0)
+    # NOTE: this must be float. It used to be an int array, so the 0.5 written
+    # for an interaction that spanned an open/close transition was truncated to
+    # 0 and the visit was silently counted as 'closed' rather than partial.
+    feeder_status = np.zeros(n_feeder_int, dtype=float)
     for i, (fs, fe) in enumerate(zip(feeder_int_start, feeder_int_end)):
         start_status = 0
         end_status = 0
