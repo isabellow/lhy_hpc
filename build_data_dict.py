@@ -733,7 +733,7 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
 
 if __name__ == "__main__":
     # Example: add a couple of new birds to an existing (or new) struct
-    build_or_update_session_data(new_bird_ids=['TRQ82'], overwrite=False)
+    build_or_update_session_data(new_bird_ids=['TRQ82'], overwrite=True)
 
 #     # Example: just pick up new sessions for birds already in the dict
 #     build_or_update_session_data(new_bird_ids=None)

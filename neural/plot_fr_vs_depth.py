@@ -30,7 +30,7 @@ session_info_file = f"{root_dir}good_sessions.xlsx"
 title_size = 14
 axis_label = 12
 tick_label = 9
-ylims = [610, -10]
+ylims = [5810, 4390]
 alpha_pts = 0.8
 size_pts = 6
 
@@ -117,7 +117,7 @@ n_cols = len(bird_shank_list)
 
 ''' Plot firing rate by width/depth '''
 gs_kw = dict(hspace=0.1, wspace=0.3)
-f, ax = plt.subplots(n_cols, figsize=(0.85*n_cols, 5),
+f, ax = plt.subplots(1, n_cols, figsize=(0.85*n_cols, 5),
                      sharey=True, gridspec_kw=gs_kw)
 vmax = np.nanmax(all_cell_fr)
 vmin = np.nanmin(all_cell_fr)
@@ -169,8 +169,8 @@ for col in range(n_cols):
     ax[col].set_xticklabels(['0', '0.5', '1'])
 ax[0].set_ylim(ylims)
 ax[0].set_ylabel('depth from surface (um)', fontsize=axis_label)
-f.supxlabel('spike width (ms)', fontsize=axis_label, y=0.06)
-f.suptitle(r"shanks sorted posterior $\rightarrow$ anterior", fontsize=axis_label, y=0.93)
+f.supxlabel('spike width (ms)', fontsize=axis_label, y=0.02)
+f.suptitle(r"shanks sorted posterior $\rightarrow$ anterior", fontsize=axis_label, y=0.98)
 
 # colorbar
 max_fr = np.round(vmax, 1)
@@ -192,9 +192,9 @@ for col in sorted(set(no_hist_cols)):
         edgecolor='xkcd:scarlet', linewidth=1, clip_on=False,
     )
     f.add_artist(rect)
-ax[0, col].text(0.5, 1.15, 'no histology', 
-                color='xkcd:scarlet', ha='center', va='bottom',
-                fontsize=axis_label, transform=ax[col].transAxes)
+    ax[col].text((bbox.width)/2, bbox.height + pad_y + 0.002, 'no histology', 
+                    color='xkcd:scarlet', ha='center', va='bottom',
+                    fontsize=axis_label, transform=ax[col].transAxes)
 
 f.savefig(f'{save_dir}/width_by_depth_fr.png', dpi=400, bbox_inches='tight')
 plt.show()

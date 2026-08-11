@@ -36,14 +36,14 @@ Visits that spanned an open/close transition (feeder_status 0.5) are excluded.
 '''
 
 ''' File paths '''
-root_dir = "Z:/Isabel/data/hpc_implants/"
+root_dir = "Z:/Isabel/data/lhy_implants/"
 save_figs_dir = f"../figures/basic_neural_analysis/"
-data_file = f"{root_dir}stim_session_data.npy"
+data_file = f"{root_dir}good_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
 posture_file = 'posture_pos_smooth.npy'
 
 ''' Data params '''
-bird = 'SLV132'  # update as needed
+bird = 'TRQ82'  # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
 fps = 50  # Hz
