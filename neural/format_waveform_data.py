@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import os
 from scipy import stats
 from scipy.spatial import cKDTree
 
@@ -95,6 +96,62 @@ def get_spike_times(session_dir, ks_dir='kilosort4', only_good=True):
     
     return good_clusters, spike_id, spike_t
 
+def get_good_cluster_ids(session_dir, ks_dir='kilosort4', only_good=True):
+    '''
+    KS cluster IDs matched to the rows of aligned_spikes.npy.
+
+    Params
+    ------
+    session_dir : str
+    ks_dir : str
+        kilosort folder relative to session_dir, e.g. 'BIRD_ephysid/kilosort4/'
+    n_cells : int or None
+        rows in aligned_spikes.npy. When given, a mismatch is reported and
+        None is returned rather than handing back labels that are off by some
+        unknown offset.
+    only_good : bool
+        must match the only_good used when aligned_spikes was built
+
+    Returns
+    -------
+    cluster_ids : int array, shape (n_cells,) — or None if unavailable/mismatched
+    '''
+    tsv_path = f"{session_dir}{ks_dir}cluster_group.tsv"
+    phy_info = pd.read_csv(tsv_path, sep='\t')
+    cluster_id = phy_info['cluster_id'].values
+    if only_good:
+        cluster_id = cluster_id[(phy_info['group'].values == 'good').astype(bool)]
+    cluster_id = np.asarray(cluster_id).astype(int)
+
+    return cluster_id
+
+
+def cluster_ids_for_session(data_dict, bird, session_id, root_dir):
+    '''
+    Get KS cell IDs for a given session
+
+    Returns
+    -------
+    ids : int array, shape (n_cells,)
+        phy cluster IDs
+    '''
+    # data params
+    session_data = data_dict[bird][session_id]
+
+    # paths
+    session_dir = f"{root_dir}{bird}/{bird}_{session_id}/"
+    ks_dir = f"{bird}_{session_data['ephys_id']}/{session_data['ks_folder']}/"
+    tsv_path = f"{session_dir}{ks_dir}cluster_group.tsv"
+
+    # get cluster IDs
+    phy_info = pd.read_csv(tsv_path, sep='\t')
+    cluster_id = phy_info['cluster_id'].values
+    cluster_id = cluster_id[(phy_info['group'].values == 'good').astype(bool)]
+    cluster_id = np.asarray(cluster_id).astype(int)
+
+    return cluster_id
+
+
 def pop_normalize(aligned_spikes, dt=0.02, std_reg=1e-2,baseline_window=30):
     ''' Normalize activity for population analysis 
     aligned_spikes : ndarray, shape (n_cells, n_frames)
@@ -148,7 +205,7 @@ def map_contacts_to_intan(probe, map_file_path):
     assert len(map_idx) == probe.get_contact_count()
 
     # map intan channel index to probe contact
-    intan_ch_idx = ch_map["Intan channel"].to_numpy()
+    intan_ch_idx = ch_map["Intan Channel"].to_numpy()
     intan_ch_idx = intan_ch_idx[map_idx]
     contact_sort = np.argsort(intan_ch_idx)
     
@@ -173,3 +230,57 @@ def map_contacts_to_intan(probe, map_file_path):
     shank_idx = shank_idx_unsorted[contact_sort]
 
     return contact_sort, ch_names, shank_idx
+
+def map_contacts_simple(map_file_path):
+    '''
+    Given probe contact positions,
+    get the index mapping each probe contact to an Intan channel
+
+    probe_pos : ndarray, shape (n_contacts, 2)
+        XY positions of the probe contacts in microns
+    '''
+    # load the channel map
+    ch_map = pd.read_excel(map_file_path)
+
+    # get the probe channel positions
+    xpos = ch_map["xpos"].to_numpy()
+    ypos = ch_map["ypos"].to_numpy()
+    map_pos = np.column_stack([xpos, ypos])
+    if np.max(map_pos) < 1: # units are in mm
+        map_pos = map_pos*1000
+    n_channels = map_pos.shape[0]
+
+    # get the probe channel idx
+    ch_idx = ch_map["Shank position"].to_numpy() - 1
+
+    # get custom channel names & shank IDs
+    ch_names_unsorted = []
+    shank_idx_unsorted = np.zeros(n_channels)
+    shank_list = []
+    for i in ch_idx:
+        shank_id = str(ch_map["Shank Letter"][i])
+        shank_row = str(ch_map["Shank Row"][i])
+        shank_col = str(ch_map["Shank Column"][i])
+        if len(shank_row) == 1:
+            ch_names_unsorted.append(f"{shank_id}-0{shank_row}-{shank_col}")
+        else:
+            ch_names_unsorted.append(f"{shank_id}-{shank_row}-{shank_col}")
+        if shank_id in shank_list:
+            shank_idx_unsorted[i] = shank_list.index(shank_id)
+        else:
+            shank_idx_unsorted[i] = len(shank_list)
+            shank_list.append(shank_id)
+
+    # get the mapping to Intan
+    intan_ch_idx = ch_map["Intan Channel"].to_numpy()
+    contact_sort = np.argsort(intan_ch_idx)
+
+    # reorder to Intan sort
+    ch_names = []
+    for i in contact_sort:
+        ch_names.append(ch_names_unsorted[i])
+    shank_idx = shank_idx_unsorted[contact_sort].astype(int)
+
+    return contact_sort, ch_names, shank_idx
+
+

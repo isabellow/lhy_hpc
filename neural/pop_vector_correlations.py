@@ -13,9 +13,9 @@ TODO:
 - caches vs checks
 '''
 ''' File Paths '''
-root_dir = "Z:/Isabel/data/hpc_implants/"
+root_dir = "Z:/Isabel/data/lhy_implants/"
 save_figs_dir = f"../figures/basic_neural_analysis/"
-data_file = f"{root_dir}stim_session_data.npy"
+data_file = f"{root_dir}good_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
 
 # load the data dictionary and get bird ids

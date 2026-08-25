@@ -9,6 +9,23 @@ sys.path.append("..//neural/")
 import format_waveform_data, waveform_analysis
 import matplotlib.pyplot as plt
 
+# util functions for channel mapping
+def remap_by_channel_map(values_by_row, channel_map, n_channels_total, fill_value=np.nan):
+    '''
+    Account for channels excluded during sorting.
+
+    channel_positions.npy does not include excluded channels
+    channel_map.npy gives the original (pre-exclusion) channel index
+    '''
+    values_by_row = np.asarray(values_by_row, dtype=float)
+    out_shape = (n_channels_total,) + values_by_row.shape[1:]
+    full = np.full(out_shape, fill_value, dtype=float)
+    for row, ch_id in enumerate(channel_map):
+        full[ch_id] = values_by_row[row]
+    return full
+
+
+# anatomy/geometry functions
 def dmdl_rel2abs(rel_ap):
     '''
     Given hippocampus width, get AP position relative to lamda (in microns)
@@ -53,7 +70,7 @@ def ml_to_ap_dist(ml_A, ml_B, shank_dist=150):
 
     return ap_dist
 
-def convert_coords(raw_coords):
+def convert_coords(raw_coords, shank_dist=150):
     '''
     Takes the raw insertion coordinates and converts them to a more useful format
 
@@ -73,29 +90,45 @@ def convert_coords(raw_coords):
     rel_ml = raw_coords[:, 0]
     rel_ap = raw_coords[:, 1]
     angle_deg = raw_coords[:, 2]
+    n_shanks = raw_coords.shape[0]
 
     # convert to microns
     rel_ml_um = rel_ml*1000
     rel_ap_um = rel_ap*1000
     
+    # convert degrees to radians
+    angle_rad = np.deg2rad(angle_deg)
+
     # calculate ML distance from midline
     abs_ml = (rel_ap_um - rel_ml_um)
 
-    # calculate the AP shank distance given the ML positions
-    ap_shanks = ml_to_ap_dist(rel_ml_um[0], rel_ml_um[1])
-
-    # adjust ap and convert to microns
+    # approximate AP locations
     abs_ap_approx = dmdl_rel2abs(rel_ap_um)
-    abs_ap = np.asarray([np.mean(abs_ap_approx)-ap_shanks/2, np.mean(abs_ap_approx)+ap_shanks/2])
-    
-    # convert degrees to radians
-    angle_rad = np.deg2rad(angle_deg)
-    
+
+    # calculate the AP shank distance given the ML positions
+    if n_shanks == 1:
+        abs_ap = abs_ap_approx
+    else:
+        # account for AP distance between shank pairs
+        ap_steps = np.asarray([
+            ml_to_ap_dist(rel_ml_um[i], rel_ml_um[i + 1], shank_dist=shank_dist)
+            for i in range(n_shanks - 1)
+        ])
+        
+        # cumulative AP offset of each shank relative to shank 0
+        cum_ap_offset = np.concatenate([[0], np.cumsum(ap_steps)])
+
+        # re-centered on the mean of the per-shank histology AP estimates
+        abs_ap = np.mean(abs_ap_approx) + cum_ap_offset - np.mean(cum_ap_offset)
+
     return np.column_stack([abs_ml, abs_ap, angle_rad])
 
 
 def probe_to_brain(insert_coords, probe_depth, probe_coords):
     '''
+    TODO: update this function to account for arbitrary N shanks
+    as described in Claude "Consolidating neural data pipeline functions"
+    
     Given a probe that is tilted towards the midline and not tilted in the AP axis,
     convert from probe coordinates (as output by kilosort) to brain coordinates.
     
@@ -173,7 +206,6 @@ def probe_to_brain_dv(insert_angle, probe_depth, probe_coords):
     # get probe params
     probe_dv = probe_coords[:, 1]
     n_channels = probe_coords.shape[0]
-    shank_dist = probe_coords[n_channels//2, 0] - probe_coords[0, 0]
 
     # estimate the tip location for each shank
     tip_dv = probe_depth*np.cos(insert_angle)
@@ -192,9 +224,7 @@ def get_channel_shank(probe_coords):
 
 def get_anatomy_info(session_info_file, data_dict):
     # get the bird list
-    bird_list = []
-    for bird in data_dict.keys():
-        bird_list.append(bird)
+    bird_list = list(data_dict.keys())    
 
     # load the session info for each bird
     for bird in bird_list:
@@ -205,36 +235,44 @@ def get_anatomy_info(session_info_file, data_dict):
         # get the approx probe depth per session
         for session_id in session_info['id']:
             if session_id in data_dict[bird].keys():
-                # only calculate for new data
-                # if 'depth' in data_dict[bird][session_id].keys():
-                #     continue
                 probe_depth = session_info.loc[session_info["id"] == session_id,
                                                "approx. depth (um)"].iloc[0]
                 data_dict[bird][session_id]['depth'] = probe_depth
 
-        # to store the insertion coordinates - ML, AP, angle for each shank
-        data_dict[bird]['insert_coords'] = np.zeros((2, 3))
-
-    # grab the raw coordinates
+    # get N shanks
     probe_info = pd.read_excel(session_info_file, sheet_name='Anatomy', header=0)
+    shank_letter_to_idx = {}
+    n_shanks_per_bird = {}
     for i, row in probe_info.iterrows():
-        # get the bird and shank IDs
         bird_shank = row['bird ID']
-        bird, shank = bird_shank.split(sep='_')
-        
-        # extract the raw coords
-        rel_ml = row['ML']
-        rel_ap = row['AP']
-        angle_deg = row['angle_deg']
-        if np.isnan(angle_deg):
-             angle_deg = 10
-        
-        # store the raw values
-        insert_coords = np.asarray([rel_ml, rel_ap, angle_deg])
-        if shank=='A':
-            data_dict[bird]['insert_coords'][0] = insert_coords
+        if '_' in bird_shank:
+            bird, shank = bird_shank.split(sep='_')
         else:
-            data_dict[bird]['insert_coords'][1] = insert_coords
+            bird, shank = bird_shank, 'A'
+        shank_idx = shank_letter_to_idx.setdefault(shank, len(shank_letter_to_idx))
+        n_shanks_per_bird[bird] = shank_idx + 1
+
+    for bird in bird_list:
+        n_shanks = n_shanks_per_bird.get(bird, 1)
+        data_dict[bird]['insert_coords'] = np.zeros((n_shanks, 3))
+        
+    # extract the raw coords
+    for i, row in probe_info.iterrows():
+        bird_shank = row['bird ID']
+        if '_' in bird_shank:
+            bird, shank = bird_shank.split(sep='_')
+        else:
+            bird, shank = bird_shank, 'A'
+        if bird not in data_dict:
+            continue
+
+        rel_ml, rel_ap, angle_deg = row['ML'], row['AP'], row['angle_deg']
+        if np.isnan(angle_deg):
+            angle_deg = 10 # TODO
+
+        # store the raw insertion coords
+        insert_coords = np.asarray([rel_ml, rel_ap, angle_deg])
+        data_dict[bird]['insert_coords'][shank_letter_to_idx[shank]] = insert_coords
 
     # convert the relative coords to absolute
     for bird in bird_list:
@@ -244,7 +282,7 @@ def get_anatomy_info(session_info_file, data_dict):
 
     return data_dict
 
-def get_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth):
+def get_cell_pos(session_dir, ks_dir, ephys_dir):
     # load and format the waveform struct
     waveform_struct = format_waveform_data.load_wf_data(session_dir, ks_dir=ks_dir)
     wf_ids = waveform_struct['goodIDs']
@@ -257,8 +295,8 @@ def get_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth):
     # load the channel positions and convert to brain coords
     ch_pos_probe = np.load(f"{session_dir}{ks_dir}channel_positions.npy")
     ch_shank_a = get_channel_shank(ch_pos_probe)
-    if "RBY94" in session_dir:
-        # TODO finish saving shank index for each cell
+    if np.any(np.isnan(insert_coords[:, :2])):
+        # missing AP or ML histology estimate for at least 1 shank
         brain_dv = probe_to_brain_dv(insert_angle=insert_coords[0, 2],
                                             probe_depth=depth,
                                             probe_coords=ch_pos_probe)
@@ -270,12 +308,17 @@ def get_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth):
                                         probe_depth=depth,
                                         probe_coords=ch_pos_probe)
 
+    # reorder to take into account broken channels
+    ch_pos_brain = remap_by_channel_map(ch_pos_brain, channel_map, n_channels_total)
+    ch_shank_a = remap_by_channel_map(ch_shank_a, channel_map, n_channels_total, fill_value=False).astype(bool)
+    
     # get the position of each cell in the brain
     cell_pos = np.zeros((n_cells, 3))
     cell_shank_a = np.zeros(n_cells).astype(bool)
     for cell, ch in enumerate(wf_ch_idx):
         cell_pos[cell] = ch_pos_brain[ch]
         cell_shank_a[cell] =  ch_shank_a[ch]
+    
     return cell_pos, cell_shank_a
 
 def get_channel_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth):
@@ -286,10 +329,15 @@ def get_channel_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth):
                                                                                                data_dir=ephys_dir,
                                                                                                return_ch_names=True)       
     wf_ch_idx = np.asarray([ch_names.index(ch) for ch in wf_channels])
+    n_channels_total = len(ch_names)
 
-    # load the channel positions and convert to brain coords
+    # load the channel position (missing excluded channels)
     ch_pos_probe = np.load(f"{session_dir}{ks_dir}channel_positions.npy")
-    if "RBY94" in session_dir:
+    channel_map = np.load(f"{session_dir}{ks_dir}channel_map.npy").squeeze().astype(int)
+
+    # convert channel positions to brain coords
+    if np.any(np.isnan(insert_coords[:, :2])):
+        # missing AP or ML histology estimate for at least 1 shank
         brain_dv = probe_to_brain_dv(insert_angle=insert_coords[0, 2],
                                             probe_depth=depth,
                                             probe_coords=ch_pos_probe)
@@ -300,8 +348,80 @@ def get_channel_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth):
         ch_pos_brain = probe_to_brain(insert_coords=insert_coords,
                                         probe_depth=depth,
                                         probe_coords=ch_pos_probe)
-        
+
+    # account for excluded (broken) channels
+    ch_pos_brain = remap_by_channel_map(ch_pos_brain, channel_map, n_channels_total)
+    ch_shank_a = remap_by_channel_map(ch_shank_a, channel_map, n_channels_total, fill_value=False).astype(bool)
+    excluded_idx = np.where(np.isnan(ch_pos_brain[:, 0]))[0]
+    excluded_names = [ch_names[i] for i in excluded_idx]
+    print(f"  broken/excluded channels ({len(excluded_names)}): {excluded_names}")
+
     return ch_pos_brain
+
+def get_channel_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth):
+    '''
+    Triangulates channel and cell positions in the brain.
+
+    Returns
+    -------
+    ch_pos_brain : nparray, shape (n_channels_total, 3)
+        ML, AP, DV brain coords for every channel on the probe
+        (NaN for any channel excluded from kilosort4)
+    ch_shank_a : nparray, shape (n_channels_total,), bool
+        whether each channel is on shank A
+        (NaN-excluded channels -> False)
+    cell_pos : nparray, shape (n_cells, 3)
+        brain coords of each good cell's best channel
+    cell_shank_a : nparray, shape (n_cells,), bool
+        whether each good cell's best channel is on shank A
+    '''
+    # load and format the waveform data
+    waveform_struct = format_waveform_data.load_wf_data(session_dir, ks_dir=ks_dir)
+    wf_ids = waveform_struct['goodIDs']
+    mean_waveforms, wf_channels, _, ch_names = format_waveform_data.sort_wf_by_channel('', waveform_struct,
+                                                                                               data_dir=ephys_dir,
+                                                                                               return_ch_names=True)       
+    wf_ch_idx = np.asarray([ch_names.index(ch) for ch in wf_channels])
+
+    # params
+    n_cells = mean_waveforms.shape[0]
+    n_channels_total = len(ch_names)
+
+    # channel positions (not inc. excluded channels) and mapping to all probe channels
+    ch_pos_probe = np.load(f"{session_dir}{ks_dir}channel_positions.npy")
+    channel_map = np.load(f"{session_dir}{ks_dir}channel_map.npy").squeeze().astype(int)
+
+    # get the positions in the brain
+    if np.any(np.isnan(insert_coords[:, :2])):
+        brain_dv = probe_to_brain_dv(insert_angle=insert_coords[0, 2],
+                                            probe_depth=depth,
+                                            probe_coords=ch_pos_probe)
+        brain_ml = np.full(brain_dv.shape[0], np.nan)
+        brain_ap = np.full(brain_dv.shape[0], np.nan)
+        ch_pos_brain = np.column_stack((brain_ml, brain_ap, brain_dv))
+    else:
+        ch_pos_brain = probe_to_brain(insert_coords=insert_coords,
+                                        probe_depth=depth,
+                                        probe_coords=ch_pos_probe)
+
+    # which shank is each channel on?
+    ch_shank_a = get_channel_shank(ch_pos_probe)
+
+    # account for excluded channels
+    ch_pos_brain = remap_by_channel_map(ch_pos_brain, channel_map, n_channels_total)
+    ch_shank_a = remap_by_channel_map(ch_shank_a, channel_map, n_channels_total, fill_value=False).astype(bool)
+    excluded_idx = np.where(np.isnan(ch_pos_brain[:, 0]))[0]
+    excluded_names = [ch_names[i] for i in excluded_idx]
+    print(f"  broken/excluded channels ({len(excluded_names)}): {excluded_names}")
+
+    # get the position of each cell's best channel
+    cell_pos = np.zeros((n_cells, 3))
+    cell_shank_a = np.zeros(n_cells).astype(bool)
+    for cell, ch in enumerate(wf_ch_idx):
+        cell_pos[cell] = ch_pos_brain[ch]
+        cell_shank_a[cell] = ch_shank_a[ch]
+
+    return ch_pos_brain, ch_shank_a, cell_pos, cell_shank_a
 
 
 def define_dm_dl(ap_lims, n_pts=20):
@@ -329,26 +449,29 @@ def save_cell_positions(data_dict, root_dir):
         print(f'\nlocalizing cells for {bird}')
         insert_coords = data_dict[bird]['insert_coords']
         session_list = data_dict[bird]['all_sessions']
+
         for session_id in session_list:
-            # specify the file paths
-            if 'ephys' in data_dict[bird][session_id]['preprocessed_data']:
-                session_dir = f'{root_dir}{bird}/{bird}_{session_id}/'
-                for folder in sorted(os.listdir(session_dir)):
-                    if f'{bird}_{session_id}' in folder:
-                        ephys_id = folder[-13:]
-                        for file in sorted(os.listdir(f"{session_dir}{bird}_{ephys_id}")):
-                            if 'kilosort4' in file:
-                                ks_dir = f"{bird}_{ephys_id}/{file}/"
-                                ephys_dir = f"{session_dir}{bird}_{ephys_id}/raw_ephys_output/"
-                                depth = data_dict[bird][session_id]['depth']
+            session_data = data_dict[bird][session_id]
+            if 'ephys' not in session_data['preprocessed_data']:
+                continue
 
-                                # get the channel positions
-                                ch_pos = get_channel_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth)
-                                data_dict[bird][session_id]['channel_pos'] = ch_pos
+            # set paths
+            session_dir = f'{root_dir}{bird}/{bird}_{session_id}/'
+            ephys_id = session_data['ephys_id']
+            ks_id = session_data['ks_folder']
+            ks_dir = f"{bird}_{ephys_id}/{ks_id}/"
+            if 'lhy' in root_dir:
+                ephys_dir = f"{session_dir}{bird}_{ephys_id}/"
+            else:
+                ephys_dir = f"{session_dir}{bird}_{ephys_id}/raw_ephys_output/"
 
-                                # get the cell positions
-                                cell_pos, cell_shank_a = get_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth)
-                                data_dict[bird][session_id]['cell_pos'] = cell_pos
-                                data_dict[bird][session_id]['shank_A_idx'] = cell_shank_a
+            # channel and cell positions in brain coordinates
+            depth = session_data['depth']
+            ch_pos, ch_shank_a, cell_pos, cell_shank_a = get_channel_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, depth)
+            
+            # save everything
+            session_data['channel_pos'] = ch_pos
+            session_data['cell_pos'] = cell_pos
+            session_data['shank_A_idx'] = cell_shank_a
 
     return data_dict
