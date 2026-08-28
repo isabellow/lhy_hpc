@@ -167,6 +167,19 @@ def sort_events_by_duration(onsets, offsets, groups=None):
     block_edges = np.where(np.diff(sorted_groups) != 0)[0] + 1
     return order, block_edges
 
+def sort_events_by_time_group(onsets, offsets, groups=None):
+    onsets = np.asarray(onsets)
+    offsets = np.asarray(offsets)
+    if groups is None:
+        groups = np.zeros(onsets.shape[0], dtype=int)
+    groups = np.asarray(groups)
+
+    # lexsort applies the LAST key first, so this is group-major, time-minor
+    order = np.lexsort((onsets, groups))
+    sorted_groups = groups[order]
+    block_edges = np.where(np.diff(sorted_groups) != 0)[0] + 1
+    return order, block_edges
+
 
 def event_psth(spike_fr, align_frames, window, dt,
                sigma_frames=0.0, keep=None):

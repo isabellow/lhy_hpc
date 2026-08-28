@@ -14,15 +14,6 @@ def get_waveform_params(waveform_struct):
     # best channel for each waveform, pythonic indexing
     max_site = waveform_struct['max_site'] - 1
 
-    # get the waveform properties
-    fr = waveform_struct['meanRate']
-    width = np.zeros(n_cells)
-    asymm = np.zeros(n_cells)
-    for wf_idx in range(n_cells):
-        best_ch = max_site[wf_idx]
-        width[wf_idx] = calc_spike_width(mean_waveforms[wf_idx, best_ch])
-        asymm[wf_idx] = calc_amp_assym(mean_waveforms[wf_idx, best_ch])
-
     return  mean_waveforms, max_site
 
 def clu_waveforms_gmm(width, asymm, log_fr, prob_thresh=0.5):
@@ -102,6 +93,53 @@ def calc_spike_width(wf, sampling_rate=30000):
     spk_w = (spk_w_samples / sampling_rate)*1000
     return spk_w
 
+def calc_spike_width_polarity(wf, sampling_rate=30000):
+    """
+    Calculate the waveform width, acounting for polarity.
+
+    For negative-going spikes, time (ms) from the trough to 
+    the subsequent peak of an average waveform.
+
+    For positive-going, the mirror image--time from the peak
+    to the subsequent trough. A cell is called 'positive' when
+    the largest excursion from baseline is upward.
+    """
+    # determine polarity
+    positive = wf.max() > abs(wf.min())
+
+    # index of the first peak (pos or neg)
+    first_idx = int(np.argmax(wf)) if positive else int(np.argmin(wf))
+
+    # index of the next deviation
+    rest = wf[first_idx:]
+    spk_w_samples = int(np.argmin(rest)) if positive else int(np.argmax(rest))
+
+    # width
+    spk_w = spk_w_samples / sampling_rate * 1e3
+
+    return spk_w
+
+# def half_width_ms(wf, fs=30000):
+#     """Full width at half maximum of the dominant peak, in ms.
+
+#     Polarity-agnostic, so it can be compared across up- and down-going spikes
+#     """
+#     i = int(np.argmax(np.abs(wf)))
+#     half = wf[i] / 2.0
+#     sgn = np.sign(wf[i])
+
+#     def cross(step):
+#         j = i
+#         while 0 <= j + step < wf.size and sgn * (wf[j + step] - half) > 0:
+#             j += step
+#         k = j + step
+#         if not (0 <= k < wf.size):
+#             return float(j)
+#         denom = wf[k] - wf[j]
+#         return float(j) if denom == 0 else j + (half - wf[j]) / denom * step
+
+#     return (cross(1) - cross(-1)) / fs * 1e3
+
 def calc_amp_assym(wf):
     '''
     Calculate the relative height of the two positive peaks flanking the trough
@@ -110,7 +148,7 @@ def calc_amp_assym(wf):
     (b-a)/(b+a) where a is the first peak, b is the second
     −1 when 1st peak is there and 2nd is not
     0 when 1st = 2nd
-    +1 when -1st is not there and 2nd is there
+    +1 when 1st is not there and 2nd is there
 
     Params
     ------

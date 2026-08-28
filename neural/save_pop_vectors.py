@@ -20,7 +20,6 @@ Add to the data dictionary for future use.
 '''
 # Include only cells bounded by channels with stim response?
 proj_only = True
-subtract_baseline = True
 
 ''' File Paths '''
 root_dir = "Z:/Isabel/data/hpc_implants/"
@@ -157,40 +156,24 @@ for bird in bird_ids:
             ret_vectors_raw = ret_vectors_raw[:, stim_idx_cell]
 
         ''' Optionally subtract the baseline for each event type '''
-        if subtract_baseline:
-            # compute avg population vectors for all events
-            avg_visit_vector = np.mean(visit_vectors_raw, axis=0, keepdims=True)
-            avg_cache_vector = np.mean(cache_vectors_raw, axis=0, keepdims=True)
-            avg_retrieve_vector = np.mean(ret_vectors_raw, axis=0, keepdims=True)
+        # compute avg population vectors for all events
+        avg_visit_vector = np.mean(visit_vectors_raw, axis=0, keepdims=True)
+        avg_cache_vector = np.mean(cache_vectors_raw, axis=0, keepdims=True)
+        avg_retrieve_vector = np.mean(ret_vectors_raw, axis=0, keepdims=True)
 
-            # subtract the means across all events
-            visit_vectors = visit_vectors_raw - avg_visit_vector
-            cache_vectors = cache_vectors_raw - avg_cache_vector
-            retrieve_vectors = ret_vectors_raw - avg_retrieve_vector
-        else:
-            # keep only excitatory cells
-            exc_idx = data_dict[bird][session_id]['excitatory_idx']
-            if proj_only:
-                exc_idx = exc_idx[stim_idx_cell]
-
-            visit_vectors = visit_vectors_raw[:, exc_idx]
-            cache_vectors = cache_vectors_raw[:, exc_idx]
-            retrieve_vectors = ret_vectors_raw[:, exc_idx]
+        # subtract the means across all events
+        visit_vectors = visit_vectors_raw - avg_visit_vector
+        cache_vectors = cache_vectors_raw - avg_cache_vector
+        retrieve_vectors = ret_vectors_raw - avg_retrieve_vector
 
         ''' Save data for future use '''
-        if 'barcode_dict' in data_dict[bird][session_id].keys():
-            barcode_dict = data_dict[bird][session_id]['barcode_dict']
-        else:
-            barcode_dict = {}
-
-        barcode_dict['cache_vectors'] = cache_vectors
-        barcode_dict['retrieve_vectors'] = retrieve_vectors
-        barcode_dict['visit_vectors'] = visit_vectors
-
-        barcode_dict['cache_loc'] = cache_loc
-        barcode_dict['retrieve_loc'] = ret_loc
-        barcode_dict['visit_loc'] = visit_loc
-
+        # make a dictionary of cache-related data
+        barcode_dict = data_dict[bird][session_id].get('barcode_dict', {})
+        barcode_dict.update({
+            'cache_vectors': cache_vectors, 'retrieve_vectors': retrieve_vectors, 'visit_vectors': visit_vectors,
+            'cache_vectors_raw': cache_vectors_raw, 'retrieve_vectors_raw': ret_vectors_raw, 'visit_vectors_raw': visit_vectors_raw,
+            'cache_loc': cache_loc, 'retrieve_loc': ret_loc, 'visit_loc': visit_loc,
+        })
         data_dict[bird][session_id]['barcode_dict'] = barcode_dict
 
 np.save(data_file, data_dict)

@@ -5,17 +5,21 @@ from scipy.spatial import distance
 import os 
 import sys
 sys.path.append("..//behavior/")
-from format_behavior_data import dist_binned_mean_sem_boot
+from format_behavior_data import dist_binned_mean_sem
 '''
 Code for correlating all pairs of population vectors, as in Chettih, Mackevicius et al, 2024
 
-TODO:
-- caches vs checks
+Uses the raw vectors (baseline activity not subtracted)
+
+Option to not normalize to same site visit-visit
+Try correlation (mean centered) vs. cosine similarity (uncentered)
+
+TODO update SEM to be bootstrapped
 '''
 ''' File Paths '''
-root_dir = "Z:/Isabel/data/lhy_implants/"
+root_dir = "Z:/Isabel/data/hpc_implants/"
 save_figs_dir = f"../figures/basic_neural_analysis/"
-data_file = f"{root_dir}good_session_data.npy"
+data_file = f"{root_dir}stim_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
 
 # load the data dictionary and get bird ids
@@ -35,6 +39,10 @@ perch_dist_bins = np.asarray([0, 0.01, 0.25, 0.45, 0.62, 0.76, 0.92, 1.12, 1.29,
 perch_dist_centers = (perch_dist_bins[:-1] + perch_dist_bins[1:]) / 2
 perch_dist_centers[-1] = 1.5
 perch_dist_centers_cm = perch_dist_centers*convert_norm_to_cm
+
+''' Analysis params '''
+distance_metric = 'correlation' # for cdist - also try cosine
+normalize_to_visit = True # whether to make same site visit-visit = 1 
 
 ''' list of behavior sessions '''
 all_behavior_sessions = []
@@ -57,13 +65,6 @@ all_birds_cache_retrieve_corr = np.asarray([])
 all_birds_cache_retrieve_dist = np.asarray([])
 all_birds_cache_visit_corr = np.asarray([])
 all_birds_cache_visit_dist = np.asarray([])
-
-# session IDs for bootstrapping
-session_counter = 0
-all_birds_visit_sess = np.asarray([])
-all_birds_cache_sess = np.asarray([])
-all_birds_cache_retrieve_sess = np.asarray([])
-all_birds_cache_visit_sess = np.asarray([])
 
 # excitatory/inhibitory indices
 exc_idx_all = np.asarray([]).astype(bool)
@@ -97,12 +98,6 @@ for bird in bird_ids:
     all_cache_visit_corr = np.asarray([])
     all_cache_visit_dist = np.asarray([])
 
-    # session IDs for bootstrapping
-    all_visit_sess = np.asarray([])
-    all_cache_sess = np.asarray([])
-    all_cache_retrieve_sess = np.asarray([])
-    all_cache_visit_sess = np.asarray([])
-
     behavior_sessions = all_behavior_sessions[bird_idx]
     for session_id in behavior_sessions:        
         ''' Load and format behavior data '''
@@ -112,19 +107,24 @@ for bird in bird_ids:
         cache_loc = barcode_dict['cache_loc']
         retrieve_loc = barcode_dict['retrieve_loc']
         visit_loc = barcode_dict['visit_loc']
+        n_caches = cache_loc.shape[0]
 
-        # population vectors
-        visit_vectors = barcode_dict['visit_vectors']
-        cache_vectors = barcode_dict['cache_vectors']
-        retrieve_vectors = barcode_dict['retrieve_vectors']
+        if n_caches == 0:
+            print(f'    no caches found, skipping')
+            continue
+
+        # raw population vectors (baseline included)
+        visit_vectors = barcode_dict['visit_vectors_raw']
+        cache_vectors = barcode_dict['cache_vectors_raw']
+        retrieve_vectors = barcode_dict['retrieve_vectors_raw']
 
         ''' Get the physical and neural distance between each pair of same-type events '''
         # visit-visit correlation and distances
-        visit_corr = 1 - distance.pdist(visit_vectors, 'correlation')
+        visit_corr = 1 - distance.pdist(visit_vectors, distance_metric)
         visit_dist = distance.pdist(visit_loc)
             
         # cache-cache correlation and distances
-        cache_corr = 1 - distance.pdist(cache_vectors, 'correlation')
+        cache_corr = 1 - distance.pdist(cache_vectors, distance_metric)
         cache_dist = distance.pdist(cache_loc)
 
         # collect across sessions
@@ -135,11 +135,11 @@ for bird in bird_ids:
 
         ''' Get the physical and neural distance between each pair of different-type events '''
         # cache-retrieve correlation and distances
-        cache_retrieve_corr = 1 - distance.cdist(cache_vectors, retrieve_vectors, metric='correlation')
+        cache_retrieve_corr = 1 - distance.cdist(cache_vectors, retrieve_vectors, metric=distance_metric)
         cache_retrieve_dist = distance.cdist(cache_loc, retrieve_loc)
 
         # cache-visit correlation and distances
-        cache_visit_corr = 1 - distance.cdist(cache_vectors, visit_vectors, metric='correlation')
+        cache_visit_corr = 1 - distance.cdist(cache_vectors, visit_vectors, metric=distance_metric)
         cache_visit_dist = distance.cdist(cache_loc, visit_loc)
 
         # collect across sessions
@@ -147,13 +147,6 @@ for bird in bird_ids:
         all_cache_retrieve_dist = np.append(all_cache_retrieve_dist, cache_retrieve_dist)
         all_cache_visit_corr = np.append(all_cache_visit_corr, cache_visit_corr)
         all_cache_visit_dist = np.append(all_cache_visit_dist, cache_visit_dist)
-
-        # collect session IDs for bootstrapping
-        all_visit_sess = np.append(all_visit_sess, np.full(visit_corr.size, session_counter))
-        all_cache_sess = np.append(all_cache_sess, np.full(cache_corr.size, session_counter))
-        all_cache_retrieve_sess = np.append(all_cache_retrieve_sess, np.full(cache_retrieve_corr.size, session_counter))
-        all_cache_visit_sess = np.append(all_cache_visit_sess, np.full(cache_visit_corr.size, session_counter))
-        session_counter += 1
 
     ''' Store data for comparison across birds '''
     all_birds_visit_corr = np.append(all_birds_visit_corr, all_visit_corr)
@@ -166,31 +159,30 @@ for bird in bird_ids:
     all_birds_cache_visit_corr = np.append(all_birds_cache_visit_corr, all_cache_visit_corr)
     all_birds_cache_visit_dist = np.append(all_birds_cache_visit_dist, all_cache_visit_dist)
 
-    all_birds_visit_sess = np.append(all_birds_visit_sess, all_visit_sess)
-    all_birds_cache_sess = np.append(all_birds_cache_sess, all_cache_sess)
-    all_birds_cache_retrieve_sess = np.append(all_birds_cache_retrieve_sess, all_cache_retrieve_sess)
-    all_birds_cache_visit_sess = np.append(all_birds_cache_visit_sess, all_cache_visit_sess)
-
 
     ''' Same-to-same correlation within bird '''
     # visit-visit
-    avg_visit_corr, sem_visit_corr = dist_binned_mean_sem_boot(all_visit_corr, 
+    avg_visit_corr, sem_visit_corr = dist_binned_mean_sem(all_visit_corr, 
                                                             all_visit_dist,
-                                                            all_visit_sess,
                                                             perch_dist_bins)
 
     # cache-cache
-    avg_cache_corr, sem_cache_corr = dist_binned_mean_sem_boot(all_cache_corr, 
+    avg_cache_corr, sem_cache_corr = dist_binned_mean_sem(all_cache_corr, 
                                                             all_cache_dist,
-                                                            all_cache_sess,
                                                             perch_dist_bins)
 
     # normalize so same site visit-visit = 1
-    norm_factor = np.max(avg_visit_corr)
-    avg_visit_corr_norm = avg_visit_corr / norm_factor
-    sem_visit_corr = sem_visit_corr / norm_factor
-    avg_cache_corr_norm = avg_cache_corr / norm_factor
-    sem_cache_corr = sem_cache_corr / norm_factor
+    if normalize_to_visit:
+        norm_factor = np.max(avg_visit_corr)
+        avg_visit_corr_norm = avg_visit_corr / norm_factor
+        sem_visit_corr = sem_visit_corr / norm_factor
+        avg_cache_corr_norm = avg_cache_corr / norm_factor
+        sem_cache_corr = sem_cache_corr / norm_factor
+    else:
+        avg_visit_corr_norm = avg_visit_corr
+        sem_visit_corr = sem_visit_corr
+        avg_cache_corr_norm = avg_cache_corr
+        sem_cache_corr = sem_cache_corr
 
     # plot it
     f, ax = plt.subplots(1, 2, figsize=(6, 3), sharey=True)
@@ -207,33 +199,37 @@ for bird in bird_ids:
                  avg_cache_corr_norm+sem_cache_corr,
                  color='xkcd:orange', lw=1)
 
-    ax[0].set_ylabel('correlation (norm.)')
+    ax[0].set_ylabel('correlation (raw)')
     ax[0].set_xlabel('distance (cm)')
     ax[1].set_xlabel('distance (cm)')
     ax[0].set_title('visit vs. visit')
     ax[1].set_title('cache vs. cache')
 
-    f.savefig(f'{save_folder}cache_visit_corr.png', dpi=600, bbox_inches='tight')
+    f.savefig(f'{save_folder}cache_visit_corr_raw.png', dpi=600, bbox_inches='tight')
     plt.show()
 
     ''' Different events correlation within bird '''
     # cache-retrieve
-    avg_cache_ret_corr, sem_cache_ret_corr = dist_binned_mean_sem_boot(all_cache_retrieve_corr, 
+    avg_cache_ret_corr, sem_cache_ret_corr = dist_binned_mean_sem(all_cache_retrieve_corr, 
                                                                     all_cache_retrieve_dist,
-                                                                    all_cache_retrieve_sess,
                                                                     perch_dist_bins)
 
     # cache-visit
-    avg_cache_visit_corr, sem_cache_visit_corr = dist_binned_mean_sem_boot(all_cache_visit_corr, 
+    avg_cache_visit_corr, sem_cache_visit_corr = dist_binned_mean_sem(all_cache_visit_corr, 
                                                                         all_cache_visit_dist,
-                                                                        all_cache_visit_sess,
                                                                         perch_dist_bins)
 
     # normalize so same site visit-visit = 1
-    avg_cache_ret_corr = avg_cache_ret_corr / norm_factor
-    sem_cache_ret_corr = sem_cache_ret_corr / norm_factor
-    avg_cache_visit_corr = avg_cache_visit_corr / norm_factor
-    sem_cache_visit_corr = sem_cache_visit_corr / norm_factor
+    if normalize_to_visit:
+        avg_cache_ret_corr = avg_cache_ret_corr / norm_factor
+        sem_cache_ret_corr = sem_cache_ret_corr / norm_factor
+        avg_cache_visit_corr = avg_cache_visit_corr / norm_factor
+        sem_cache_visit_corr = sem_cache_visit_corr / norm_factor
+    else:
+        avg_cache_ret_corr = avg_cache_ret_corr
+        sem_cache_ret_corr = sem_cache_ret_corr
+        avg_cache_visit_corr = avg_cache_visit_corr
+        sem_cache_visit_corr = sem_cache_visit_corr
 
     # plot it
     f, ax = plt.subplots(1, 2, figsize=(6, 3), sharey=True)
@@ -250,35 +246,39 @@ for bird in bird_ids:
                  avg_cache_visit_corr+sem_cache_visit_corr,
                  color='xkcd:dark gray', lw=1)
 
-    ax[0].set_ylabel('correlation (norm.)')
+    ax[0].set_ylabel('correlation (raw)')
     ax[0].set_xlabel('distance (cm)')
     ax[1].set_xlabel('distance (cm)')
     ax[0].set_title('cache vs. retrieval')
     ax[1].set_title('cache vs. visit')
 
-    f.savefig(f'{save_folder}cache_ret_corr.png', dpi=600, bbox_inches='tight')
+    f.savefig(f'{save_folder}cache_ret_corr_raw.png', dpi=600, bbox_inches='tight')
     plt.show()
 
 
 ''' Same-to-same correlations across birds '''
 # visit-visit
-avg_visit_corr, sem_visit_corr = dist_binned_mean_sem_boot(all_birds_visit_corr, 
+avg_visit_corr, sem_visit_corr = dist_binned_mean_sem(all_birds_visit_corr, 
                                                         all_birds_visit_dist,
-                                                        all_birds_visit_sess,
                                                         perch_dist_bins)
 
 # cache-cache
-avg_cache_corr, sem_cache_corr = dist_binned_mean_sem_boot(all_birds_cache_corr, 
+avg_cache_corr, sem_cache_corr = dist_binned_mean_sem(all_birds_cache_corr, 
                                                         all_birds_cache_dist,
-                                                        all_birds_cache_sess,
                                                         perch_dist_bins)
 
 # normalize so same site visit-visit = 1
-norm_factor = np.max(avg_visit_corr)
-avg_visit_corr_norm = avg_visit_corr / norm_factor
-sem_visit_corr = sem_visit_corr / norm_factor
-avg_cache_corr_norm = avg_cache_corr / norm_factor
-sem_cache_corr = sem_cache_corr / norm_factor
+if normalize_to_visit:
+    norm_factor = np.max(avg_visit_corr)
+    avg_visit_corr_norm = avg_visit_corr / norm_factor
+    sem_visit_corr = sem_visit_corr / norm_factor
+    avg_cache_corr_norm = avg_cache_corr / norm_factor
+    sem_cache_corr = sem_cache_corr / norm_factor
+else:
+    avg_visit_corr_norm = avg_visit_corr
+    sem_visit_corr = sem_visit_corr
+    avg_cache_corr_norm = avg_cache_corr
+    sem_cache_corr = sem_cache_corr
 
 # plot it
 f, ax = plt.subplots(1, 2, figsize=(6, 3))
@@ -296,40 +296,44 @@ ax[1].vlines(perch_dist_centers_cm,
              color='xkcd:orange', lw=1)
 
 # axis ticks and limits
-ax[0].set_ylim(-0.5, 4.25)
-ax[0].set_yticks(np.arange(5).astype(int))
-ax[1].set_ylim(-0.5, 4.25)
-ax[1].set_yticks(np.arange(5).astype(int))
+ax[0].set_ylim(-0.5, 6.25)
+ax[0].set_yticks(np.arange(7).astype(int))
+ax[1].set_ylim(-0.5, 6.25)
+ax[1].set_yticks(np.arange(7).astype(int))
 
 # axis labels
-ax[0].set_ylabel('correlation (norm.)')
+ax[0].set_ylabel('correlation (raw)')
 ax[0].set_xlabel('distance (cm)')
 ax[1].set_xlabel('distance (cm)')
 ax[0].set_title('visit vs. visit')
 ax[1].set_title('cache vs. cache')
 
-f.savefig(f'{save_figs_dir}cache_visit_corr.png', dpi=600, bbox_inches='tight')
+f.savefig(f'{save_figs_dir}HPC_all_birds/cache_visit_corr_raw.png', dpi=600, bbox_inches='tight')
 plt.show()
 
 
 ''' Different events correlation within bird '''
 # cache-retrieve
-avg_cache_ret_corr, sem_cache_ret_corr = dist_binned_mean_sem_boot(all_birds_cache_retrieve_corr, 
+avg_cache_ret_corr, sem_cache_ret_corr = dist_binned_mean_sem(all_birds_cache_retrieve_corr, 
                                                                 all_birds_cache_retrieve_dist,
-                                                                all_birds_cache_retrieve_sess,
                                                                 perch_dist_bins)
 
 # cache-visit
-avg_cache_visit_corr, sem_cache_visit_corr = dist_binned_mean_sem_boot(all_birds_cache_visit_corr, 
+avg_cache_visit_corr, sem_cache_visit_corr = dist_binned_mean_sem(all_birds_cache_visit_corr, 
                                                                     all_birds_cache_visit_dist,
-                                                                    all_birds_cache_visit_sess,
                                                                     perch_dist_bins)
 
 # normalize so same site visit-visit = 1
-avg_cache_ret_corr = avg_cache_ret_corr / norm_factor
-sem_cache_ret_corr = sem_cache_ret_corr / norm_factor
-avg_cache_visit_corr = avg_cache_visit_corr / norm_factor
-sem_cache_visit_corr = sem_cache_visit_corr / norm_factor
+if normalize_to_visit:
+    avg_cache_ret_corr = avg_cache_ret_corr / norm_factor
+    sem_cache_ret_corr = sem_cache_ret_corr / norm_factor
+    avg_cache_visit_corr = avg_cache_visit_corr / norm_factor
+    sem_cache_visit_corr = sem_cache_visit_corr / norm_factor
+else:
+    avg_cache_ret_corr = avg_cache_ret_corr
+    sem_cache_ret_corr = sem_cache_ret_corr
+    avg_cache_visit_corr = avg_cache_visit_corr
+    sem_cache_visit_corr = sem_cache_visit_corr
 
 # plot it
 f, ax = plt.subplots(1, 2, figsize=(6, 3))
@@ -353,11 +357,11 @@ ax[1].set_ylim(-0.5, 4.25)
 ax[1].set_yticks(np.arange(5).astype(int))
 
 # axis labels
-ax[0].set_ylabel('correlation (norm.)')
+ax[0].set_ylabel('correlation (raw)')
 ax[0].set_xlabel('distance (cm)')
 ax[1].set_xlabel('distance (cm)')
 ax[0].set_title('cache vs. retrieval')
 ax[1].set_title('cache vs. visit')
 
-f.savefig(f'{save_figs_dir}cache_ret_corr.png', dpi=600, bbox_inches='tight')
+f.savefig(f'{save_figs_dir}HPC_all_birds/cache_ret_corr_raw.png', dpi=600, bbox_inches='tight')
 plt.show()

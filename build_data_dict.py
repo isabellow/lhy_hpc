@@ -210,7 +210,6 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
         print(f'\ncollecting waveform data for {bird}')
         bird_dir = f"{root_dir}{bird}/"
         session_list = data_dict[bird]['all_sessions']
-        all_props = data_dict[bird].get('all_waveform_props', [])
 
         for session_id in session_list:
             if (not overwrite) and ('waveform_props' in data_dict[bird][session_id]):
@@ -242,13 +241,11 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
             asymm = np.zeros(n_cells)
             for wf_idx in range(n_cells):
                 best_ch = wf_ch_idx[wf_idx]
-                width[wf_idx] = waveform_analysis.calc_spike_width(mean_waveforms[wf_idx, best_ch])
+                width[wf_idx] = waveform_analysis.calc_spike_width_polarity(mean_waveforms[wf_idx, best_ch])
                 asymm[wf_idx] = waveform_analysis.calc_amp_assym(mean_waveforms[wf_idx, best_ch])
 
             waveform_props = np.row_stack([asymm, width, log_fr])
             data_dict[bird][session_id]['waveform_props'] = waveform_props
-            all_props = waveform_props if len(all_props) == 0 else np.column_stack([all_props, waveform_props])
-            data_dict[bird]['all_waveform_props'] = all_props
 
     # re-cluster excitatory/inhibitory across ALL sessions any time new data is added
     all_waveform_props = []
@@ -264,6 +261,7 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
                 session_index = np.append(session_index, np.full(n_cells, sess_idx))
                 session_keys.append((bird, session_id))
                 sess_idx += 1
+    data_dict[bird]['all_waveform_props'] = all_waveform_props
 
     if len(all_waveform_props) > 0:
         asymm, width, log_fr = all_waveform_props[0], all_waveform_props[1], all_waveform_props[2]
@@ -429,7 +427,7 @@ def collect_stim_response_data(data_dict, bird_ids, root_dir, overwrite=False,
 # Step 6: population vectors (ported from neural/save_pop_vectors.py)
 # ---------------------------------------------------------------------------
 def collect_population_vectors(data_dict, bird_ids, root_dir, arena_dir, arena_items_file,
-                                proj_only=False, subtract_baseline=True, overwrite=False,
+                                proj_only=False, overwrite=False,
                                 long_thresh=2, baseline_window=30, fps=50):
     from format_behavior_data import load_behavior_data, get_caches_refined, get_visits_refined, get_retrievals_refined
     from format_waveform_data import get_spike_times
@@ -517,25 +515,16 @@ def collect_population_vectors(data_dict, bird_ids, root_dir, arena_dir, arena_i
                 cache_vectors_raw = cache_vectors_raw[:, stim_idx_cell]
                 ret_vectors_raw = ret_vectors_raw[:, stim_idx_cell]
 
-            # optionally subtract off the average population vector
-            if subtract_baseline:
-                visit_vectors = visit_vectors_raw - np.mean(visit_vectors_raw, axis=0, keepdims=True)
-                cache_vectors = cache_vectors_raw - np.mean(cache_vectors_raw, axis=0, keepdims=True)
-                retrieve_vectors = ret_vectors_raw - np.mean(ret_vectors_raw, axis=0, keepdims=True)
-            
-            # otherwise, just take the excitatory cell activity
-            else:
-                exc_idx = data_dict[bird][session_id]['excitatory_idx']
-                if proj_only:
-                    exc_idx = exc_idx[stim_idx_cell]
-                visit_vectors = visit_vectors_raw[:, exc_idx]
-                cache_vectors = cache_vectors_raw[:, exc_idx]
-                retrieve_vectors = ret_vectors_raw[:, exc_idx]
+            # subtract off the average population vector
+            visit_vectors = visit_vectors_raw - np.mean(visit_vectors_raw, axis=0, keepdims=True)
+            cache_vectors = cache_vectors_raw - np.mean(cache_vectors_raw, axis=0, keepdims=True)
+            retrieve_vectors = ret_vectors_raw - np.mean(ret_vectors_raw, axis=0, keepdims=True)
 
             # make a dictionary of cache-related data
             barcode_dict = data_dict[bird][session_id].get('barcode_dict', {})
             barcode_dict.update({
                 'cache_vectors': cache_vectors, 'retrieve_vectors': retrieve_vectors, 'visit_vectors': visit_vectors,
+                'cache_vectors_raw': cache_vectors_raw, 'retrieve_vectors_raw': ret_vectors_raw, 'visit_vectors_raw': visit_vectors_raw,
                 'cache_loc': cache_loc, 'retrieve_loc': ret_loc, 'visit_loc': visit_loc,
             })
             data_dict[bird][session_id]['barcode_dict'] = barcode_dict
@@ -563,9 +552,6 @@ def collect_cache_shuffle_activity(data_dict, bird_ids, root_dir, overwrite=Fals
         ['shuff_avg_cache'], ['cache_modulated']
         (cache_modulated: -1 = significantly suppressed, 1 = significantly
         enhanced, 0 = no change, relative to the shuffled null distribution)
-
-    NOTE: this is the sole place active_cache_frac is computed -- it is not
-    computed in collect_population_vectors (step 6).
     '''
     from format_behavior_data import load_behavior_data, get_caches_refined
 
@@ -733,7 +719,7 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
 
 if __name__ == "__main__":
     # Example: add a couple of new birds to an existing (or new) struct
-    build_or_update_session_data(new_bird_ids=['TRQ82'], overwrite=True)
+    build_or_update_session_data(new_bird_ids=['LMN86'], overwrite=True)
 
 #     # Example: just pick up new sessions for birds already in the dict
 #     build_or_update_session_data(new_bird_ids=None)

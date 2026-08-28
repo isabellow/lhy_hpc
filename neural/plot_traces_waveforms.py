@@ -1,6 +1,5 @@
 import numpy as np
-from plot_cell_ephys import make_cell_figure
-from format_waveform_data import cluster_ids_for_session
+from plot_cell_ephys import run_session
 
 '''
 For all good cells, plot example traces and waveforms
@@ -11,10 +10,11 @@ data_file = f"{root_dir}good_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
 
 ''' Data params '''
-bird = 'TRQ82'
-session_id = '260806'
+bird = 'LMN88'
+session_id = '260720'
 data_dict = np.load(data_file, allow_pickle=True).item()
-example_cells = np.asarray([2])
+# example_cells = np.asarray([2]) # example cell IDs
+example_cells = None # all good cells
 
 # set save dir for figures
 save_figs_dir = f"../figures/basic_neural_analysis/"
@@ -27,11 +27,10 @@ ephys_id = data_dict[bird][session_id]['ephys_id']
 ks_id = data_dict[bird][session_id]['ks_folder']
 ks_dir = f"{session_dir}{bird}_{ephys_id}/{ks_id}/"
 intan_folder = f"{session_dir}{bird}_{ephys_id}/"
-
-# set example cell list
-if example_cells is None:
-    example_cells = cluster_ids_for_session(data_dict, bird, session_id, root_dir)
+# si_folder = f"{intan_folder}kilosort4_bc/"
 
 ''' Plot the waveforms '''
-for cell_id in example_cells:
-    fig, data = make_cell_figure(intan_folder, ks_dir, cluster_id=cell_id, out_dir=save_figs_folder)
+# results = run_session(intan_folder=intan_folder, si_folder=si_folder, ks_dir=ks_dir, 
+#                         cluster_ids=example_cells, out_dir=save_figs_folder)
+results = run_session(intan_folder=intan_folder, ks_dir=ks_dir, 
+                        cluster_ids=example_cells, out_dir=save_figs_folder)

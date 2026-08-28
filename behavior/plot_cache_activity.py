@@ -38,9 +38,10 @@ data_file = f"{root_dir}good_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
 
 ''' Data params '''
-bird = 'LMN88'  # update as needed
+bird = 'TRQ82'  # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
+session_list = ['260825']
 fps = 50  # Hz
 dt = 1 / fps
 
@@ -74,8 +75,8 @@ event_window = 10                                    # seconds, total
 fr_halfwidth_raster = int((event_window / 2) / dt)   # frames each side
 raster_t_pts = np.arange(-fr_halfwidth_raster, fr_halfwidth_raster + 1) * dt
 
-# ~100 ms Gaussian smoothing for the tuning curves
-sigma_frames = fps // 10
+# ~40 ms Gaussian smoothing for the tuning curves
+sigma_frames = fps // 25
 
 # style
 cache_color = 'xkcd:orange'
@@ -153,7 +154,7 @@ for session_id in behavior_sessions:
     n_cache = cache_onsets.shape[0]
     n_ret = retrieve_onsets.shape[0]
     print(f'  {n_cache} caches, {n_ret} retrievals')
-    if n_cache == 0 and n_ret == 0:
+    if n_cache == 0 or n_ret == 0:
         print('  skipping')
         continue
 

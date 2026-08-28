@@ -9,9 +9,9 @@ countHexInteractions and parts of runSiteIntGUI from RigControl/arena alignment
 ''' Set root directory '''
 root_dir = "Z:/Isabel/data/lhy_implants/" # locker
 # root_dir = "C:/Users/ilow1/Documents/code/bird_pose_tracking/model_output/" # local - update as needed
-bird_id = 'TRQ82'
-session_id = '260806'
-pred_id = '260806'
+bird_id = 'LMN86'
+session_id = '260826'
+pred_id = '260826'
 session_root = f"{root_dir}{bird_id}/{bird_id}_{session_id}/"
 
 
@@ -54,6 +54,12 @@ def detect_stateChanges_selfmerge(state_matrix):
     if len(state_matrix.shape) == 1:
         state_matrix = state_matrix[:, None]
     assert len(state_matrix.shape) == 2, "State matrix must be at most 2D"
+    if state_matrix.shape[0] == 0:
+        print('    no interactions, skipping')
+        onset_times = np.asarray([])
+        offset_times = np.asarray([])
+        obj_num = 0
+        return onset_times, offset_times, obj_num
 
 
     # Count state changes, including start and final
@@ -107,12 +113,24 @@ def detect_stateChanges_othermerge(state_matrix, other_times, dur_thresh):
     if len(state_matrix.shape) == 1:
         state_matrix = state_matrix[:, None]
     assert len(state_matrix.shape) == 2, "State matrix must be at most 2D"
+    if state_matrix.shape[0] == 0:
+        print('    no interactions, skipping')
+        onset_times = np.asarray([])
+        offset_times = np.asarray([])
+        obj_num = 0
+        return onset_times, offset_times, obj_num
 
     # Count state changes, including start and final
     state_vector = np.any(state_matrix, axis=1)
     state_vector_padded = np.concatenate(([False], state_vector, [False])).astype(int)
     onset_times = np.where(np.diff(state_vector_padded) > 0.5)[0]
     offset_times = np.where(np.diff(state_vector_padded) < -0.5)[0]
+    if (onset_times.shape[0] == 0) | (offset_times.shape[0] == 0):
+        print('    no interactions, skipping')
+        onset_times = np.asarray([])
+        offset_times = np.asarray([])
+        obj_num = 0
+        return onset_times, offset_times, obj_num
     if offset_times[-1] == state_matrix.shape[0]:
         offset_times[-1] = offset_times[-1] - 1
         if offset_times[-1] == onset_times[-1]:

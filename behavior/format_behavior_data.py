@@ -1,11 +1,14 @@
 import numpy as np
 from scipy import stats
 import pandas as pd
+import warnings
 import sys
 sys.path.append("../utils/")
 from load_matlab_data import loadmat_sbx
 from scipy.ndimage import gaussian_filter, gaussian_filter1d
 from scipy import stats
+from scipy.signal import medfilt
+from matplotlib.path import Path
 
 """
 INDEXING NOTE
@@ -52,9 +55,24 @@ def get_speed(pos_2d, smooth_sig=50, fps=50):
 
 
 ''' Classify arena interactions '''
-def get_cache_ints(count_data, seed_struct):
+def get_cache_ints(count_data, seed_struct, return_site_idx=False):
     '''
     Caches are site interactions where a seed is added
+
+    Params
+    ------
+    return_site_idx : bool
+        also return the cache site of each event.  Default False, so the
+        two-value call signature used by existing scripts is unchanged.
+
+    Returns
+    -------
+    cache_onsets, cache_offsets : arrays, shape (n_caches,)
+    cache_site_idx : int array, shape (n_caches,)   only if return_site_idx
+        0-INDEXED site, i.e. siteNum - 1, matching get_checks_raw and the
+        event_site_idx expected by get_site_occupancy / get_site_status.
+        NOTE this differs from get_caches_refined, which returns the raw
+        1-indexed siteNum (see module INDEXING NOTE).
     '''
     # get all site interactions
     all_int_start = count_data['newSite']
@@ -66,11 +84,30 @@ def get_cache_ints(count_data, seed_struct):
     cache_onsets = all_int_start[all_int_changes > 0]
     cache_offsets = all_int_end[all_int_changes > 0]
 
+    if return_site_idx:
+        all_site_num = np.asarray(count_data['siteNum']).astype(int)
+        cache_site_idx = all_site_num[all_int_changes > 0] - 1  # siteNum is 1-indexed
+        return cache_onsets, cache_offsets, cache_site_idx
     return cache_onsets, cache_offsets
 
-def get_retrieve_ints(count_data, seed_struct):
+def get_retrieve_ints(count_data, seed_struct, return_site_idx=False):
     '''
     Retrievals are site interactions where a seed is removed
+
+    Params
+    ------
+    return_site_idx : bool
+        also return the cache site of each event.  Default False, so the
+        two-value call signature used by existing scripts is unchanged.
+
+    Returns
+    -------
+    ret_onsets, ret_offsets : arrays, shape (n_retrievals,)
+    ret_site_idx : int array, shape (n_retrievals,)   only if return_site_idx
+        0-INDEXED site, i.e. siteNum - 1, matching get_checks_raw and the
+        event_site_idx expected by get_site_occupancy / get_site_status.
+        NOTE this differs from get_retrievals_refined, which returns the raw
+        1-indexed siteNum (see module INDEXING NOTE).
     '''
     # get all site interactions
     all_int_start = count_data['newSite']
@@ -82,6 +119,10 @@ def get_retrieve_ints(count_data, seed_struct):
     ret_onsets = all_int_start[all_int_changes < 0]
     ret_offsets = all_int_end[all_int_changes < 0]
 
+    if return_site_idx:
+        all_site_num = np.asarray(count_data['siteNum']).astype(int)
+        ret_site_idx = all_site_num[all_int_changes < 0] - 1  # siteNum is 1-indexed
+        return ret_onsets, ret_offsets, ret_site_idx
     return ret_onsets, ret_offsets
 
 def get_caches_refined(count_data, seed_struct, n_total_frames, dt=0.02):
@@ -92,7 +133,7 @@ def get_caches_refined(count_data, seed_struct, n_total_frames, dt=0.02):
     as well as the perch ID for each cache
     
     Define a cache window as in SC, EM 2024
-    - 250 ms before cache onset to 250 ms after cache offset
+    - 240 ms before cache onset to 240 ms after cache offset
     - truncated to avoid other interactions
     - caches > 2 sec, only include 1 sec after onset and 1 sec before offset
     '''
@@ -114,7 +155,7 @@ def get_caches_refined(count_data, seed_struct, n_total_frames, dt=0.02):
     n_perches = all_perch_start.shape[0]
 
     # +/-240 ms window around cache, avoiding other events
-    t_window = 0.25/dt
+    t_window = 0.24/dt
     cache_onsets = np.asarray([])
     cache_offsets = np.asarray([])
     for cs, ce in zip(cache_onsets_raw, cache_offsets_raw):
@@ -155,7 +196,7 @@ def get_retrievals_refined(count_data, seed_struct, n_total_frames, dt=0.02):
     as well as the perch ID for each retrieval
     
     Define a retrieval window as in SC, EM 2024
-    - 250 ms before retrieval onset to 250 ms after retrieval offset
+    - 240 ms before retrieval onset to 240 ms after retrieval offset
     - truncated to avoid other interactions
     - retrievals > 2 sec, only include 1 sec after onset and 1 sec before offset
     '''
@@ -177,7 +218,7 @@ def get_retrievals_refined(count_data, seed_struct, n_total_frames, dt=0.02):
     n_perches = all_perch_start.shape[0]
 
     # +/-240 ms window around retrieval, avoiding other events
-    t_window = 0.25/dt
+    t_window = 0.24/dt
     ret_onsets = np.asarray([])
     ret_offsets = np.asarray([])
     for cs, ce in zip(ret_onsets_raw, ret_offsets_raw):
@@ -246,8 +287,8 @@ def get_checks_refined(count_data, seed_struct, n_total_frames, dt=0.02,
     all_perch_end = count_data['endPerch']
     n_perches = all_perch_start.shape[0]
 
-    # +/-250 ms window around check, avoiding other events
-    t_window = 0.25/dt
+    # +/-240 ms window around check, avoiding other events
+    t_window = 0.24/dt
     check_onsets = np.asarray([])
     check_offsets = np.asarray([])
     # checks longer than 1.5 s are dropped below, so track which raw checks
@@ -323,6 +364,186 @@ def get_checks_raw(count_data, seed_struct, max_check_dur=1.5, dt=0.02):
     check_site_idx = all_site_num[keep] - 1        # siteNum is 1-indexed
 
     return check_onsets.astype(int), check_offsets.astype(int), check_site_idx.astype(int)
+
+
+''' Individual beak cache site touches (unmerged) '''
+# defaults mirror count_arena_interactions in get_site_interactions.py.  Only
+# the params that feed the beak-on-cache state matrix are needed here.
+BEAK_TOUCH_PARAMS = dict(
+    reproj_thresh=10,            # max reprojection error for a valid frame (px)
+    speed_thresh=1 / 2,          # feet 'not moving' (norm units/s)
+    cache_height_thresh=0.023,   # beak low enough for a site interaction
+    state_median_win=5,          # median filter on the state, to kill blips
+)
+
+
+def get_beak_site_touches(data_dir, arena_data, pred_file=None, params=None,
+                          count_data=None, pos_file='posture_pos_smooth.npy',
+                          vel_file='posture_vel_smooth.npy',
+                          body_reproj_error=None, min_dur_frames=1,
+                          return_state=False, warn=True):
+    '''
+    Every individual beak-on-cache-site touch, WITHOUT merging.
+
+    Recomputes the beak-on-cache state matrix exactly as the
+    "Beak on cache sites" section of get_site_interactions.py does — same
+    keypoints, same thresholds, same median filter — then returns each
+    contiguous run of that state as its own event.  get_site_interactions.py
+    instead hands the state matrix to detect_stateChanges_othermerge, which
+    glues consecutive touches at one site into a single "site interaction"
+    unless the bird did something else in between; those merged interactions
+    are what ends up in count_data as newSite / endSite / siteNum, and the
+    individual touches inside them cannot be recovered from that, which is why
+    this has to go back to the pose data.
+
+    Runs are detected per site (one column at a time), so a touch that moves
+    straight from one site to the next comes back as two events rather than
+    one, and nothing is ever merged across a gap.
+
+    Params
+    ------
+    data_dir : str
+        session behavior_data folder, as passed to load_behavior_data
+    arena_data : dict
+        arena objects, e.g. loadmat(f'{arena_dir}{arena_items_file}',
+        squeeze_me=True).  Only arena_data['caches'] is used.
+    pred_file : str or None
+        name of the pose model output in data_dir
+        ('<pred_date>_posture_2stage_face.npy'), used for the body
+        reprojection error.  None looks for a single *posture_2stage_face.npy
+        in data_dir.  Ignored if body_reproj_error is given.
+    params : dict or None
+        thresholds, keys as BEAK_TOUCH_PARAMS.  Anything missing falls back to
+        count_data['params'] if count_data is given, then to
+        BEAK_TOUCH_PARAMS.  Pass count_data to reproduce the thresholds this
+        session's saved interactions were actually detected with.
+    count_data : dict or None
+        as loaded by load_behavior_data, only read for count_data['params']
+    pos_file, vel_file : str
+        smoothed keypoint position / velocity files in data_dir
+    body_reproj_error : array (n_frames,) or None
+        skips loading pred_file if you already have it
+    min_dur_frames : int
+        drop touches shorter than this many frames.  1 keeps everything with a
+        non-zero duration; the median filter has already removed brief blips.
+    return_state : bool
+        also return the (n_frames, n_cache_sites) bool state matrix
+
+    Returns
+    -------
+    touch_onsets, touch_offsets : int arrays, shape (n_touches,)
+        first frame of the touch, and the frame after the last one, in the
+        same half-open convention as count_data newSite / endSite.  Sorted by
+        onset.
+    touch_site_idx : int array, shape (n_touches,)
+        0-INDEXED cache site, i.e. matching get_checks_raw and the
+        event_site_idx expected by get_site_status / get_expectation_status,
+        NOT the 1-indexed count_data siteNum (see module INDEXING NOTE).
+    beak_on_cache : bool array (n_frames, n_cache_sites)   only if return_state
+    '''
+    # resolve thresholds: explicit params, then the session's own, then defaults
+    p = dict(BEAK_TOUCH_PARAMS)
+    if count_data is not None:
+        saved = count_data['params'] if 'params' in count_data else None
+        if saved is not None:
+            for key in BEAK_TOUCH_PARAMS:
+                try:
+                    val = saved[key]
+                except (KeyError, IndexError, ValueError, TypeError):
+                    continue
+                if val is not None and np.size(val) == 1:
+                    p[key] = float(np.asarray(val).item())
+    if params is not None:
+        p.update(params)
+
+    # beak position and foot speed, as in count_arena_interactions
+    smooth_pts = np.load(f'{data_dir}{pos_file}')      # frames x keypoints x xyz
+    smooth_vel = np.load(f'{data_dir}{vel_file}')
+    beak_pos = np.mean(smooth_pts[:, [0, 1]], axis=1)  # avg of the two beak pts
+    foot_speed = np.sqrt(np.sum(np.mean(smooth_vel[:, [10, 14]], axis=1) ** 2,
+                                axis=1))
+    n_frames = beak_pos.shape[0]
+
+    # body reprojection error, for the valid-frame mask
+    if body_reproj_error is None:
+        if pred_file is None:
+            from glob import glob
+            hits = sorted(glob(f'{data_dir}*posture_2stage_face.npy'))
+            if len(hits) != 1:
+                raise FileNotFoundError(
+                    f'expected one *posture_2stage_face.npy in {data_dir}, '
+                    f'found {len(hits)}; pass pred_file')
+            pred_path = hits[0]
+        else:
+            pred_path = f'{data_dir}{pred_file}'
+        results = np.load(pred_path, allow_pickle=True).item()['results']
+        body_reproj_error = results['com_rep_err'][:, 1]
+    body_reproj_error = np.asarray(body_reproj_error)
+
+    # frame filters
+    valid_frames = body_reproj_error < p['reproj_thresh']
+    feet_still = foot_speed < p['speed_thresh']
+    beak_low_cache = beak_pos[:, 2] < p['cache_height_thresh']
+
+    # beak inside each cache site's hull
+    n_cache_sites = len(arena_data['caches'])
+    beak_on_cache = np.zeros((n_frames, n_cache_sites), dtype=bool)
+    for n in range(n_cache_sites):
+        convex_hull = np.array(arena_data['caches'][n]['ConvexHull'])
+        path = Path(convex_hull)
+        tmp = path.contains_points(beak_pos[:, :2])
+        beak_on_cache[:, n] = tmp & beak_low_cache & feet_still & valid_frames
+
+    # same median filter on the state as get_site_interactions.py
+    state_median_win = int(p['state_median_win'])
+    if state_median_win > 1:
+        beak_on_cache = medfilt(beak_on_cache.astype(float),
+                                kernel_size=(state_median_win, 1)).astype(bool)
+
+    # contiguous runs, one site at a time, so nothing is merged across sites
+    onsets, offsets, sites = [], [], []
+    for n in range(n_cache_sites):
+        col = np.concatenate(([False], beak_on_cache[:, n], [False])).astype(int)
+        starts = np.flatnonzero(np.diff(col) > 0.5)
+        ends = np.flatnonzero(np.diff(col) < -0.5)
+        if starts.shape[0] == 0:
+            continue
+        # a run that reaches the last frame: keep it in range, as
+        # detect_stateChanges_* does
+        if ends[-1] == n_frames:
+            ends[-1] = n_frames - 1
+            if ends[-1] == starts[-1]:
+                starts[-1] = starts[-1] - 1
+        onsets.append(starts)
+        offsets.append(ends)
+        sites.append(np.full(starts.shape[0], n, dtype=int))
+
+    if not onsets:
+        empty = np.asarray([], dtype=int)
+        if return_state:
+            return empty, empty, empty, beak_on_cache
+        return empty, empty, empty
+
+    # combine everything across sites
+    touch_onsets = np.concatenate(onsets)
+    touch_offsets = np.concatenate(offsets)
+    touch_site_idx = np.concatenate(sites)
+
+    # drop anything too short
+    keep = (touch_offsets - touch_onsets) >= max(int(min_dur_frames), 1)
+    touch_onsets = touch_onsets[keep]
+    touch_offsets = touch_offsets[keep]
+    touch_site_idx = touch_site_idx[keep]
+
+    # sort by time in session
+    order = np.argsort(touch_onsets, kind='stable')
+    touch_onsets = touch_onsets[order].astype(int)
+    touch_offsets = touch_offsets[order].astype(int)
+    touch_site_idx = touch_site_idx[order].astype(int)
+
+    if return_state:
+        return touch_onsets, touch_offsets, touch_site_idx, beak_on_cache
+    return touch_onsets, touch_offsets, touch_site_idx
 
 
 def get_visits_raw(count_data, exclude_feeders=True,
@@ -425,8 +646,8 @@ def get_visits_refined(count_data, n_total_frames, dt=0.02,
                 if all_perch_end[i-1] >= visit_start:
                     visit_start = all_perch_end[i-1]
             if i < n_perches-1:
-                if all_perch_start[i+1] <= visit_end:
-                    visit_end = all_perch_start[i+1]
+                if all_perch_end[i] <= visit_end:
+                    visit_end = all_perch_end[i]
 
             # check session ends
             if visit_start < 0:
@@ -497,6 +718,265 @@ def get_site_occupancy(count_data, seed_struct, event_onsets, event_site_idx,
     return occupied
 
 
+''' Seed provenance: baited vs cached '''
+# status codes returned by get_site_status.  0/1/2/3 so they can index a list
+# of colours or names directly; -1 marks an event we cannot score at all.
+SITE_EMPTY, SITE_BAITED, SITE_CACHED, SITE_MIXED = 0, 1, 2, 3
+SITE_UNKNOWN = -1
+SITE_STATUS_NAMES = {SITE_EMPTY: 'empty', SITE_BAITED: 'baited',
+                     SITE_CACHED: 'cached', SITE_MIXED: 'mixed',
+                     SITE_UNKNOWN: 'unknown'}
+
+
+def _seed_provenance_timeline(count_data, seed_struct, use_init_counts=True,
+                              removal_rule='cached_first', warn=True):
+    '''
+    Baited and cached seed counts in every site, after every site interaction.
+
+    seedChanges only records how many seeds moved, not which ones, so the two
+    pools are tracked as a running ledger: every positive change adds to the
+    cached pool (the bird put it there), every negative change draws down the
+    pools in the order set by removal_rule.
+
+    removal_rule only matters for a site holding both kinds at once, which is
+    only possible if the bird cached into a baited site.
+    'cached_first' assumes the bird takes its own seed back first; the
+    alternative is 'baited_first'.  Either way the site is reported as
+    SITE_MIXED for as long as both pools are non-empty, so nothing downstream
+    has to trust the rule unless it chooses to keep mixed events.
+
+    Note on clamping: a pool is never allowed below zero.  With
+    use_init_counts=False the baited pool starts empty, so retrievals of
+    baited seeds have nothing to draw from and are silently clamped (this is
+    exactly the case where get_site_occupancy, whose cumulative sum can go
+    negative, may disagree with the ledger).
+
+    Returns
+    -------
+    dict with
+        int_start_sorted : int array (n_interactions,)  onset frames, sorted
+        baited_after, cached_after : float arrays (n_interactions, n_sites)
+            pool sizes immediately AFTER each interaction, rows in the same
+            (sorted) order as int_start_sorted
+        init_baited : float array (n_sites,)  state before the first interaction
+        n_sites : int
+        removal_rule : str
+    '''
+    # load the data
+    seed_changes = np.atleast_2d(np.asarray(seed_struct['seedChanges'], dtype=float))
+    init_counts = np.atleast_1d(np.asarray(seed_struct['initSeedCounts'], dtype=float))
+    all_int_start = np.asarray(count_data['newSite']).astype(int)
+    n_interactions, n_sites = seed_changes.shape
+
+    if removal_rule not in ('cached_first', 'baited_first'):
+        raise ValueError("removal_rule must be 'cached_first' or 'baited_first'")
+
+    # ensure interactions are in chronological order
+    order = np.argsort(all_int_start, kind='stable')
+    int_start_sorted = all_int_start[order]
+    changes_sorted = seed_changes[order]
+
+    # initialize baited vs. cached tallies
+    init_baited = init_counts.copy() if use_init_counts else np.zeros(n_sites)
+    baited = init_baited.copy()
+    cached = np.zeros(n_sites)
+    baited_after = np.zeros((n_interactions, n_sites))
+    cached_after = np.zeros((n_interactions, n_sites))
+    unaccounted = 0.0
+
+    # walk the interactions in time order
+    for j in range(n_interactions):
+        row = changes_sorted[j]
+        for s in np.flatnonzero(row):
+            d = row[s]
+            if d > 0:
+                cached[s] += d
+                continue
+            take = -d
+            pools = (cached, baited) if removal_rule == 'cached_first' else (baited, cached)
+            for pool in pools:
+                drawn = min(take, pool[s])
+                pool[s] -= drawn
+                take -= drawn
+            unaccounted += take           # removal from an already-empty site
+        baited_after[j] = baited
+        cached_after[j] = cached
+
+    if warn and use_init_counts and unaccounted > 0:
+        warnings.warn(
+            f"{unaccounted:g} seed removal(s) came from sites the ledger had "
+            "already scored as empty, and were clamped at zero. Check "
+            "initSeedCounts against the annotation for this session.")
+
+    return dict(int_start_sorted=int_start_sorted, baited_after=baited_after,
+                cached_after=cached_after, init_baited=init_baited,
+                n_sites=n_sites, removal_rule=removal_rule)
+
+
+def get_site_seed_counts(count_data, seed_struct, event_onsets, event_site_idx,
+                         include_own_change=False, use_init_counts=True,
+                         removal_rule='cached_first', timeline=None):
+    '''
+    How many baited and how many cached seeds were in the site at each event?
+
+    Params
+    ------
+    count_data, seed_struct : as loaded by load_behavior_data
+    event_onsets : array, shape (n_events,)
+        onset frame of each event, e.g. from get_checks_raw / get_retrieve_ints
+    event_site_idx : array, shape (n_events,)
+        0-indexed cache site for each event
+    include_own_change : bool
+        False (default) scores the site as the bird arrives, i.e. strictly
+        BEFORE this event's own seed change.
+        True reproduces the convention used by get_site_occupancy.
+    use_init_counts : bool
+        Count the baited seeds (initSeedCounts).  False
+        scores within-session caching only and no event can come back baited.
+    removal_rule : 'cached_first' | 'baited_first'
+        see _seed_provenance_timeline
+    timeline : dict or None
+        a pre-built _seed_provenance_timeline, to avoid rebuilding the ledger
+        when scoring several event types from one session
+
+    Returns
+    -------
+    n_baited, n_cached : float arrays, shape (n_events,)
+        nan for events whose site index falls outside the arena
+    '''
+    # data params
+    if timeline is None:
+        timeline = _seed_provenance_timeline(
+            count_data, seed_struct, use_init_counts=use_init_counts,
+            removal_rule=removal_rule)
+    event_onsets = np.asarray(event_onsets).astype(int)
+    event_site_idx = np.asarray(event_site_idx).astype(int)
+    n_sites = timeline['n_sites']
+
+    # rank every event against the interaction start times once.
+    # side='left' excludes the event's own seed change
+    # side='right' includes it.
+    side = 'right' if include_own_change else 'left'
+    k = np.searchsorted(timeline['int_start_sorted'], event_onsets, side=side) - 1
+
+    # tally baited vs cached
+    n_baited = np.full(event_onsets.shape[0], np.nan)
+    n_cached = np.full(event_onsets.shape[0], np.nan)
+    for i, (site, k_i) in enumerate(zip(event_site_idx, k)):
+        if k_i < 0:                       # before the first site interaction
+            n_baited[i] = timeline['init_baited'][site]
+            n_cached[i] = 0.0
+        else:
+            n_baited[i] = timeline['baited_after'][k_i, site]
+            n_cached[i] = timeline['cached_after'][k_i, site]
+    return n_baited, n_cached
+
+
+def get_site_status(count_data, seed_struct, event_onsets, event_site_idx,
+                    include_own_change=False, use_init_counts=True,
+                    removal_rule='cached_first', timeline=None):
+    '''
+    Three-way version of get_site_occupancy: was the site empty, holding a
+    baited seed, or holding a seed the bird cached?
+
+    Params are as get_site_seed_counts.
+
+    Returns
+    -------
+    status : int array, shape (n_events,)
+        SITE_EMPTY 0 | SITE_BAITED 1 | SITE_CACHED 2 | SITE_MIXED 3
+        SITE_UNKNOWN -1 for events whose site index falls outside the arena.
+        SITE_MIXED means the site held both kinds at once and the event cannot
+        be attributed; callers usually drop these.
+        (status > 0) reproduces the occupancy flag for checks and visits.
+    '''
+    n_baited, n_cached = get_site_seed_counts(
+        count_data, seed_struct, event_onsets, event_site_idx,
+        include_own_change=include_own_change, use_init_counts=use_init_counts,
+        removal_rule=removal_rule, timeline=timeline)
+
+    status = np.full(n_baited.shape[0], SITE_UNKNOWN, dtype=int)
+    known = np.isfinite(n_baited) & np.isfinite(n_cached)
+    has_baited = known & (n_baited > 0)
+    has_cached = known & (n_cached > 0)
+    status[known & ~has_baited & ~has_cached] = SITE_EMPTY
+    status[has_baited & ~has_cached] = SITE_BAITED
+    status[has_cached & ~has_baited] = SITE_CACHED
+    status[has_baited & has_cached] = SITE_MIXED
+    return status
+
+
+def get_expectation_status(count_data, seed_struct, event_onsets, event_site_idx,
+                           timeline=None, use_init_counts=True,
+                           removal_rule='cached_first', discovered_bait='cached'):
+    '''
+    For each event, classify the site at that event as either:
+        empty | novel bait | expected seed.
+
+    Params
+    ------
+    count_data, seed_struct : as loaded by load_behavior_data
+    event_onsets : int array, shape (n_events,)
+    event_site_idx : int array, shape (n_events,)   0-indexed
+    timeline : dict or None
+        a pre-built _seed_provenance_timeline.  NOTE get_site_seed_counts
+        ignores use_init_counts and removal_rule when a timeline is passed, so
+        build the timeline with the same settings you pass here.
+    discovered_bait : 'cached' | 'drop'
+        what to do with an interaction at a site that still holds a bait the
+        bird has already found.  'cached' pools it with the bird's own caches
+        (both are seeds it should expect); 'drop' marks it SITE_UNKNOWN so the
+        caller can leave it out.
+
+    Returns
+    -------
+    status : int array, shape (n_events,)
+        SITE_EMPTY | SITE_BAITED | SITE_CACHED, SITE_UNKNOWN where the site is
+        outside the arena or the event was dropped by discovered_bait
+    is_first : bool array, shape (n_events,)
+        first-encounter flag, returned so callers can report it
+    '''
+    #check inputs
+    if discovered_bait not in ('cached', 'drop'):
+        raise ValueError("discovered_bait must be 'cached' or 'drop'")
+    if timeline is None:
+        timeline = _seed_provenance_timeline(count_data, seed_struct,
+                                             use_init_counts=use_init_counts,
+                                             removal_rule=removal_rule)
+    
+    # data params
+    n_sites = timeline['n_sites']
+    onsets = np.asarray(event_onsets).astype(int)
+    sites = np.asarray(event_site_idx).astype(int)
+    max_frame = np.max(onsets)
+
+    # get baits vs. cached seeds
+    n_baited, n_cached = get_site_seed_counts(
+        count_data, seed_struct, onsets, sites,
+        include_own_change=False, use_init_counts=use_init_counts,
+        removal_rule=removal_rule, timeline=timeline)
+    known = np.isfinite(n_baited) & np.isfinite(n_cached)
+    has_baited = known & (n_baited > 0)
+    has_seed = known & ((n_baited > 0) | (n_cached > 0))
+
+    # was this the first encounter?
+    first = np.full(n_sites, max_frame+1000, dtype=np.int64)
+    np.minimum.at(first, sites, onsets)
+    is_first = onsets == first[sites]
+
+    # set the status of each interaction
+    status = np.full(onsets.shape[0], SITE_UNKNOWN, dtype=int)
+    status[known & ~has_seed] = SITE_EMPTY
+    status[has_seed] = SITE_CACHED                    # a seed the bird expects
+    status[has_baited & is_first] = SITE_BAITED       # a seed it doesn't expect
+
+    # optionally exclude discovered but not retrieved baits
+    if discovered_bait == 'drop':
+        status[has_baited & ~is_first] = SITE_UNKNOWN
+
+    return status, is_first
+
+
 def get_n_seeds(seed_struct):
     '''
     Get the number of seeds in the arena (roughly n cached seeds)
@@ -534,6 +1014,116 @@ def dist_binned_mean_sem(vector_correlations, vector_distances, distance_bin_edg
         sem_correlations[b_idx] = stats.sem(vector_correlations[dist_bin_idx==b_idx]) 
 
     return  avg_correlations, sem_correlations
+
+def dist_binned_mean_sem_boot(vector_correlations, vector_distances, session_ids,
+                              distance_bin_edges, n_boot=1000, seed=354512,
+                              min_sessions=3, return_n_sessions=False):
+    '''
+    Distance-binned means, with SEMs from bootstrapping over sessions,
+    as in Chettih, Mackevicius et al. 2024.
+
+    Drop-in replacement for dist_binned_mean_sem() with one extra argument.
+    The returned means are identical; only the SEMs change.
+
+    Parameters
+    ----------
+    vector_correlations : array, one correlation per event pair. 2D cdist
+                          output is fine; it gets raveled.
+    vector_distances    : array, same shape, physical distance for that pair.
+    session_ids         : array, same shape, which session each pair came from.
+                          Must be unique per session when pooling across birds
+                          (e.g. f'{bird}_{session_id}', or a running counter).
+                          Pass bird IDs instead to bootstrap over birds.
+    distance_bin_edges  : bin edges, as in dist_binned_mean_sem().
+    n_boot              : number of resamples. Chettih et al. used 100; 1000
+                          costs little here and gives a steadier SEM.
+    seed                : RNG seed, so error bars don't move between runs.
+    min_sessions        : bins with fewer contributing sessions get SEM = nan.
+                          See the note below -- do not set this to 1.
+    return_n_sessions   : also return how many sessions contribute to each bin.
+
+    Returns
+    -------
+    avg_correlations : (n_bins,) bin means, identical to dist_binned_mean_sem()
+    sem_correlations : (n_bins,) SD of the resampled bin means, i.e. the
+                       bootstrap SEM
+    n_sessions_per_bin : (n_bins,) only if return_n_sessions=True
+
+    Note on min_sessions
+    --------------------
+    If every pair in a bin comes from one session, the resampled mean is the
+    same no matter how many times that session is drawn, so the bootstrap would
+    return SEM exactly 0. Such bins are returned as nan instead, with a warning.
+    '''
+    vector_correlations = np.asarray(vector_correlations, dtype=float).ravel()
+    vector_distances = np.asarray(vector_distances, dtype=float).ravel()
+    session_ids = np.asarray(session_ids).ravel()
+
+    if not (vector_correlations.shape == vector_distances.shape == session_ids.shape):
+        raise ValueError(
+            f"correlations {vector_correlations.shape}, distances "
+            f"{vector_distances.shape} and session_ids {session_ids.shape} "
+            "must all have one entry per event pair")
+
+    n_bins = int(distance_bin_edges.shape[0] - 1)
+
+    # remove nans, keeping all three arrays aligned
+    keep_idx = ~np.isnan(vector_correlations)
+    vector_correlations = vector_correlations[keep_idx]
+    vector_distances = vector_distances[keep_idx]
+    session_ids = session_ids[keep_idx]
+
+    # bin every pair once, dropping anything outside the bin edges
+    dist_bin_idx = np.digitize(vector_distances, distance_bin_edges) - 1
+    in_range = (dist_bin_idx >= 0) & (dist_bin_idx < n_bins)
+
+    # Per-session sum and count in each bin. A resampled bin mean is then
+    # sum(sums of drawn sessions) / sum(counts of drawn sessions), so the
+    # resampling loop never has to touch the (very large) pair arrays again.
+    sessions, session_idx = np.unique(session_ids, return_inverse=True)
+    n_sessions = sessions.shape[0]
+    flat_idx = session_idx[in_range] * n_bins + dist_bin_idx[in_range]
+    n_cells = n_sessions * n_bins
+    bin_counts = np.bincount(
+        flat_idx, minlength=n_cells).astype(float).reshape(n_sessions, n_bins)
+    bin_sums = np.bincount(
+        flat_idx, weights=vector_correlations[in_range],
+        minlength=n_cells).reshape(n_sessions, n_bins)
+
+    # observed means, pooling all pairs exactly as dist_binned_mean_sem() does
+    total_counts = bin_counts.sum(axis=0)
+    avg_correlations = np.full(n_bins, np.nan)
+    np.divide(bin_sums.sum(axis=0), total_counts, out=avg_correlations,
+              where=total_counts > 0)
+
+    n_sessions_per_bin = (bin_counts > 0).sum(axis=0)
+
+    # resample sessions with replacement
+    rng = np.random.default_rng(seed)
+    draws = rng.integers(0, n_sessions, size=(n_boot, n_sessions))
+    boot_sums = bin_sums[draws].sum(axis=1)       # (n_boot, n_bins)
+    boot_counts = bin_counts[draws].sum(axis=1)   # (n_boot, n_bins)
+    boot_means = np.full((n_boot, n_bins), np.nan)
+    np.divide(boot_sums, boot_counts, out=boot_means, where=boot_counts > 0)
+
+    # the bootstrap SEM is the spread of the resampled means
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        sem_correlations = np.nanstd(boot_means, axis=0, ddof=1)
+
+    # bins too thinly supported for the bootstrap to say anything
+    undersupported = n_sessions_per_bin < min_sessions
+    if undersupported.any():
+        sem_correlations[undersupported] = np.nan
+        warnings.warn(
+            f"bins {list(np.flatnonzero(undersupported))} have fewer than "
+            f"{min_sessions} sessions "
+            f"(n = {list(n_sessions_per_bin[undersupported])}); their SEM is "
+            "not estimable and is returned as nan.")
+
+    if return_n_sessions:
+        return avg_correlations, sem_correlations, n_sessions_per_bin
+    return avg_correlations, sem_correlations
 
 def spikes_by_cache(spike_frame, cache_onsets, cache_offsets, cache_window=20, dt=0.02):
     '''

@@ -9,10 +9,13 @@ sys.path.append("..//neural/")
 from format_waveform_data import cluster_ids_for_session
 from cell_filters import filter_cells, apply_cell_filter
 from event_psth import (window_frames, build_raster, raster_scatter,
-                        sort_events_by_duration, subsample_for_raster,
+                        sort_events_by_duration, sort_events_by_time_group, 
+                        subsample_for_raster,
                         event_psth_on_off, shared_ylim, raster_marker_size)
 from format_behavior_data import (load_behavior_data, get_checks_raw,
                                   get_visits_raw, get_site_occupancy)
+from spike_amplitudes import (load_spike_amplitudes, trial_amplitudes,
+                              plot_amp_panel)
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
@@ -23,8 +26,8 @@ Plot check- and visit-aligned activity for single cells, split by whether the
 site held a seed at the time (occupied vs. empty).
 
 Each figure is one cell:
-    row 0  checks  raster (aligned to offset) | onset PSTH | offset PSTH
-    row 1  visits  raster (aligned to offset) | onset PSTH | offset PSTH
+    row 0  checks  raster (aligned to onset) | onset PSTH | offset PSTH
+    row 1  visits  raster (aligned to onset) | onset PSTH | offset PSTH
 
 Events come from get_checks_raw and get_visits_raw (mirroring
 get_cache_ints/get_retrieve_ints): bare interaction bounds, not the
@@ -38,7 +41,7 @@ data_file = f"{root_dir}good_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
 
 ''' Data params '''
-bird = 'TRQ82'  # update as needed
+bird = 'LMN86'  # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
 fps = 50  # Hz
@@ -48,7 +51,7 @@ dt = 1 / fps
 # use_stim_filter keeps only cells on or bounded by stim-responsive channels
 CELL_FILTERS = dict(
     use_stim_filter = False,      # True = projection-nucleus cells only
-    fr_thresh       = 0.05,       # Hz; None disables the firing-rate cut
+    fr_thresh       = 0.1,       # Hz; None disables the firing-rate cut
     cell_type       = 'all',      # 'all' | 'excitatory' | 'inhibitory'
 )
 
@@ -57,10 +60,23 @@ CELL_FILTERS = dict(
 max_check_dur = 1.5     # seconds
 
 # a group needs at least this many usable events to get a tuning curve
-min_events_per_group = 5
+min_events_per_group = 10
 
 # max events plotted in the raster
 max_events_per_group = 100
+
+# sort by duration or chronological?
+sort_by_duration = False
+
+# skip plotting a session if any group has fewer than min_events_per_group
+skip_too_few_events = False
+
+''' Amplitude panel params '''
+# mean KS spike amplitude within the event's raster window, 
+# normalized to the unit's session median.
+show_amp_panel = True
+amp_min_spikes = 1          # events with fewer spikes in window are left blank
+amp_panel_lw = 0.8
 
 # collect sessions with pose tracking & ephys
 behavior_sessions = []
@@ -71,8 +87,8 @@ for session_id in session_list:
 
 ''' Plotting params '''
 # tuning-curve windows (seconds) relative to event onset / offset
-fr_on_start, fr_on_end, timepoints_on = window_frames(-0.5, 0.5, dt)
-fr_off_start, fr_off_end, timepoints_off = window_frames(-0.5, 0.5, dt)
+fr_on_start, fr_on_end, timepoints_on = window_frames(-0.3, 0.3, dt)
+fr_off_start, fr_off_end, timepoints_off = window_frames(-0.3, 0.3, dt)
 
 # raster window centered on event offset
 event_window = 2                                    # seconds, total
@@ -80,24 +96,27 @@ fr_halfwidth_raster = int((event_window / 2) / dt)   # frames each side
 raster_t_pts = np.arange(-fr_halfwidth_raster, fr_halfwidth_raster+1) * dt
 
 # 40 ms Gaussian smoothing for the tuning curves
-sigma_frames = fps // 25
+sigma_frames = fps // 50
 
 # style — checks green, visits grey; darker shade = occupied
 # group index is the occupancy flag itself: 0 = empty, 1 = occupied
-check_colors = ['xkcd:light green', 'xkcd:forest green']
+check_colors = ['xkcd:apple green', 'xkcd:deep green']
 visit_colors = ['xkcd:grey', 'xkcd:charcoal']
 group_names = ['empty', 'occupied']
 psth_lw = 3
 event_lw = 1
 divider_lw = 0.8
 time_int = 1        # x-tick spacing (s) on the rasters
-time_int_tc = 0.5        # x-tick spacing (s) on the tuning curves
+time_int_tc = 0.1        # x-tick spacing (s) on the tuning curves
 title_size = 14
 axis_label = 12
 legend_size = 8
 
 ''' Define/create the save folder '''
-save_folder = f"{save_figs_dir}/{bird}/check_visit_activity/"
+if sort_by_duration:
+    save_folder = f"{save_figs_dir}/{bird}/check_visit_activity/zoom/"
+else:
+    save_folder = f"{save_figs_dir}/{bird}/check_visit_activity/zoom/chronological/"
 os.makedirs(save_folder, exist_ok=True)
 
 ''' Plot check/visit responses for each session '''
@@ -160,6 +179,17 @@ for session_id in behavior_sessions:
         print(f'  {occ.shape[0]} {label} '
               f'({int(np.sum(occ))} occupied, {int(np.sum(~occ))} empty)')
 
+    ''' KS spike amplitudes for the side panel '''
+    amp_data = None
+    if show_amp_panel:
+        session_data = data_dict[bird][session_id]
+        ks_dir = f"{bird}_{session_data['ephys_id']}/{session_data['ks_folder']}/"
+        try:
+            amp_data = load_spike_amplitudes(session_dir, data_dir, ks_dir,
+                                             cell_ids, n_frames, fps=fps)
+        except FileNotFoundError as err:
+            print(f'  no KS amplitudes ({err.filename}), skipping the amp panel')
+
     ''' Pre-compute per-row event ordering and tuning curves '''
     rows = []
     for key, label, colors in [('check', 'checks', check_colors),
@@ -200,13 +230,25 @@ for session_id in behavior_sessions:
                       f'{max_events_per_group}/{n_full} events in the raster')
 
         # raster order: occupancy block first, then duration within block
-        order, block_edges = sort_events_by_duration(r_onsets, r_offsets, r_groups)
+        if sort_by_duration:
+            order, block_edges = sort_events_by_duration(r_onsets, r_offsets, r_groups)
+        else:
+            order, block_edges = sort_events_by_time_group(r_onsets, r_offsets, r_groups)
         durations = (r_offsets - r_onsets)[order]
         offset_ticks = np.clip(durations * dt, 0, raster_t_pts[-1])
 
+        # per-event amplitudes, ordered so row i here is row i of the raster
+        raster_amp = None
+        if amp_data is not None and n_events:
+            raster_amp = np.array([
+                trial_amplitudes(amp_data[c][0], amp_data[c][1],
+                                 r_onsets[order], fr_halfwidth_raster,
+                                 min_spikes=amp_min_spikes)[0]
+                for c in range(n_cells)])
+
         rows.append(dict(
             key=key, label=label, colors=colors,
-            n_events=n_events,
+            n_events=n_events, raster_amp=raster_amp,
             n_events_true=n_events_true, n_occ_true=n_occ_true, n_emp_true=n_emp_true,
             n_total_shown=n_total_shown,
             align_frames=r_onsets[order],
@@ -217,10 +259,16 @@ for session_id in behavior_sessions:
             group_ids=group_ids, n_used=n_used, enough=enough,
         ))
 
+    ''' Optionally skip the session if any group is underpowered '''
+    if skip_too_few_events and any(not np.all(r['enough']) for r in rows):
+        print(f'  skipping {session_id}: one or more groups has < {min_events_per_group} events')
+        continue
+
     ''' Plot '''
-    f, ax = plt.subplots(2, 4, figsize=(8, 4),
-                         gridspec_kw=dict(width_ratios=[1, 0.2, 1, 1],
-                                          wspace=0.3, hspace=0.45))
+    # column 0 raster | 1 amplitude | 2 spacer | 3 onset TC | 4 offset TC
+    f, ax = plt.subplots(2, 5, figsize=(10, 4),
+                         gridspec_kw=dict(width_ratios=[1, 0.28, 0.22, 1, 1],
+                                          wspace=0.2, hspace=0.45))
 
     avg_fr_session = np.round(avg_firing_rate, 2)
 
@@ -228,21 +276,21 @@ for session_id in behavior_sessions:
         cell_id = cell_ids[c_idx]
 
         for row in range(2):
-            for col in range(4):
+            for col in range(5):
                 ax[row, col].cla()
 
         # ── Cosmetics ──────────────────────────────────────────────────
         for row in range(2):
-            for col in [2, 3]:
+            for col in [3, 4]:
                 ax[row, col].spines['top'].set_visible(False)
                 ax[row, col].spines['right'].set_visible(False)
-            ax[row, 3].spines['left'].set_visible(False)
-            ax[row, 3].tick_params(labelleft=False)
+            ax[row, 4].spines['left'].set_visible(False)
+            ax[row, 4].tick_params(labelleft=False)
             for side in ['top', 'left', 'bottom', 'right']:
-                ax[row, 1].spines[side].set_visible(False)
-            ax[row, 1].set_xticks([])
-            ax[row, 1].set_yticks([])
-            ax[row, 1].set_facecolor('none')
+                ax[row, 2].spines[side].set_visible(False)
+            ax[row, 2].set_xticks([])
+            ax[row, 2].set_yticks([])
+            ax[row, 2].set_facecolor('none')
 
         # ── Shared tuning-curve ceiling across all four panels ─────────
         # only groups that actually get drawn contribute to the limit
@@ -256,8 +304,14 @@ for session_id in behavior_sessions:
 
         rng = np.random.default_rng(int(cell_id) * 7919)
 
+        event_flag = True
         for row, r in enumerate(rows):
             n_events = r['n_events']
+            if (n_events < 100) and event_flag:
+                grp_label_spacer = -0.2                
+            else:
+                grp_label_spacer = -0.25  
+                event_flag = False              
 
             # ── Raster, one colour block per occupancy group ───────────
             if n_events:
@@ -265,6 +319,7 @@ for session_id in behavior_sessions:
                                       fr_halfwidth_raster)
                 spk_s = raster_marker_size(ax[row, 0], f, n_events)
                 spk_t, spk_row = raster_scatter(raster, raster_t_pts, dt, rng=rng)
+                
                 # colour each spike by the group of the row it belongs to, so
                 # the raster and the tuning curves can never disagree
                 spk_groups = r['groups_sorted'][spk_row.astype(int)]
@@ -284,18 +339,27 @@ for session_id in behavior_sessions:
                     ax[row, 0].axhline(edge - 0.5, color='xkcd:gray',
                                        lw=divider_lw, zorder=3)
 
+            # ── Amplitude panel ───────────────────────────────────────
+            # same rows, same colours and dividers as the raster beside it
+            if r['raster_amp'] is not None and n_events:
+                plot_amp_panel(ax[row, 1], r['raster_amp'][c_idx],
+                               groups_sorted=r['groups_sorted'],
+                               block_edges=r['block_edges'],
+                               colors=r['colors'], divider_lw=divider_lw,
+                               lw=amp_panel_lw, axis_label=axis_label)
+
             # ── Tuning curves, one trace per occupancy group ───────────
             drawn = []
             for g_idx, g_id in enumerate(r['group_ids']):
                 if not r['enough'][g_idx]:
                     continue
-                ax[row, 2].plot(timepoints_on, r['on_psth'][c_idx, g_idx],
+                ax[row, 3].plot(timepoints_on, r['on_psth'][c_idx, g_idx],
                                 lw=psth_lw, color=r['colors'][g_id])
-                ax[row, 3].plot(timepoints_off, r['off_psth'][c_idx, g_idx],
+                ax[row, 4].plot(timepoints_off, r['off_psth'][c_idx, g_idx],
                                 lw=psth_lw, color=r['colors'][g_id])
                 drawn.append((g_id, int(r['n_used'][g_idx])))
 
-            for col, t_pts in [(2, timepoints_on), (3, timepoints_off)]:
+            for col, t_pts in [(3, timepoints_on), (4, timepoints_off)]:
                 ax[row, col].vlines(0, 0, max_fr,
                                     colors='k', linestyles='dashed', lw=event_lw)
                 ax[row, col].hlines(avg_fr_session[c_idx], t_pts[0], t_pts[-1],
@@ -304,23 +368,25 @@ for session_id in behavior_sessions:
 
             # ── Limits & ticks ─────────────────────────────────────────
             ax[row, 0].set_xlim(raster_t_pts[0], raster_t_pts[-1])
-            ax[row, 0].set_ylim(-0.5, max(n_events, 1) - 0.5)
+            ax[row, 0].set_ylim(-0.5, max(n_events, 1))
+            # ax[row, 0].set_yticks(np.arange(0, np.round(n_events, -1)+20, 20))
             ax[row, 0].yaxis.set_major_locator(MaxNLocator(integer=True))
+            ax[row, 1].set_ylim(ax[row, 0].get_ylim())
             ax[row, 0].set_xticks(np.arange(-event_window / 2,
                                             event_window / 2 + time_int, time_int))
             on_start_t = timepoints_on[0]
             on_end_t = timepoints_on[-1]+dt
             off_start_t = timepoints_off[0]
             off_end_t = timepoints_off[-1]+dt
-            ax[row, 2].set_xlim(on_start_t, on_end_t)
-            ax[row, 2].set_xticks(np.arange(on_start_t, on_end_t+time_int_tc, time_int_tc))
-            ax[row, 3].set_xlim(off_start_t, off_end_t)
+            ax[row, 3].set_xlim(on_start_t, on_end_t)
             ax[row, 3].set_xticks(np.arange(on_start_t, on_end_t+time_int_tc, time_int_tc))
+            ax[row, 4].set_xlim(off_start_t, off_end_t)
+            ax[row, 4].set_xticks(np.arange(off_start_t, off_end_t+time_int_tc, time_int_tc))
 
-            ax[row, 2].set_ylim(0, max_fr)
             ax[row, 3].set_ylim(0, max_fr)
-            ax[row, 2].set_yticks([0, max_fr])
-            ax[row, 3].set_yticks([])
+            ax[row, 4].set_ylim(0, max_fr)
+            ax[row, 3].set_yticks([0, max_fr])
+            ax[row, 4].set_yticks([])
 
             # ── Labels ─────────────────────────────────────────────────
             # Set a plain ylabel for the main label + count
@@ -328,23 +394,26 @@ for session_id in behavior_sessions:
                                    fontsize=axis_label, labelpad=15)
 
             # Add "empty" and "occupied" as separate colored text objects
-            empty_color = r['colors'][group_ids[0]]
-            ax[row, 0].text(-0.3, 0.17, 'empty',
+            empty_color = r['colors'][r['group_ids'][0]]
+            ax[row, 0].text(grp_label_spacer, 0.17, 'empty',
                              color=empty_color, fontsize=axis_label,
                              ha='center', va='center', rotation=90,
                              transform=ax[row, 0].transAxes)
             if len(group_ids) > 1:
-                occupied_color = r['colors'][group_ids[1]]
-                ax[row, 0].text(-0.3, 0.8, 'occupied',
+                occupied_color = r['colors'][r['group_ids'][1]]
+                ax[row, 0].text(grp_label_spacer, 0.8, 'occupied',
                                  color=occupied_color, fontsize=axis_label,
                                  ha='center', va='center', rotation=90,
                                  transform=ax[row, 0].transAxes)
 
-            ax[row, 0].set_xlabel('time from event onset (s)', fontsize=axis_label)
-            ax[row, 2].set_xlabel('time from onset (s)', fontsize=axis_label)
-            ax[row, 3].set_xlabel('time from offset (s)', fontsize=axis_label)
-            ax[row, 2].set_ylabel('firing rate (Hz)', fontsize=axis_label)
+            ax[row, 0].set_xlabel('time from onset (s)', fontsize=axis_label)
+            ax[row, 3].set_xlabel('time from onset (s)', fontsize=axis_label)
+            ax[row, 4].set_xlabel('time from offset (s)', fontsize=axis_label)
+            ax[row, 3].set_ylabel('firing rate (Hz)', fontsize=axis_label)
 
+            ax[row, 3].grid(True)
+            ax[row, 4].grid(True)
+            
         f.suptitle(f'{bird} {session_id}  —  cell {cell_id}  '
                    f'(baseline {avg_fr_session[c_idx]} Hz)',
                    fontsize=title_size, y=0.95)
