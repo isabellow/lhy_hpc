@@ -68,7 +68,7 @@ arena_dir = "C:/Users/Isabel/Documents/code/il_rig_control/arena_alignment/"
 arena_items_file = "arena_items_2.mat"
 
 ''' Data params '''
-bird = 'TRQ82'  # update as needed
+bird = 'LMN86'  # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
 # session_list = ['260825']
@@ -119,7 +119,7 @@ min_events_per_group = 1
 max_events_per_group = 100
 
 # sort by duration or chronological?
-sort_by_duration = True
+sort_by_duration = False
 
 # skip plotting a session if any group has fewer than min_events_per_group
 skip_too_few_events = False

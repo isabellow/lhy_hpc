@@ -1,20 +1,12 @@
 '''
 Event-aligned rasters and tuning curves.
 
-These were previously duplicated (and drifting apart) across
-plot_cache_activity.py and plot_feeder_responses.py:
-  - plot_cache_activity.py had compute_event_psth with a 'TODO move elsewhere'
-  - plot_feeder_responses.py hand-rolled the same alignment inline, with its
-    own edge padding and its own duration sorting
-
-Everything here works on ONE cell at a time for rasters (the old scripts built
-a (n_cells, n_events, n_t) boolean array for every cell in the session, then
-plotted a handful of them) and on all cells at once for tuning curves, which
-is the cheap direction.
+Everything here works on one cell at a time for rasters
+and on all cells at once for tuning curves.
 
 Frame conventions
 -----------------
-`spike_fr` is spike COUNTS per video frame, shape (n_cells, n_frames), as
+`spike_fr` is spike counts per video frame, shape (n_cells, n_frames), as
 saved by save_aligned_spikes.py.  Dividing by dt turns it into Hz.
 Window bounds are (start, end) offsets in frames relative to the alignment
 frame; start is normally negative and the window is half-open [start, end).
@@ -197,14 +189,16 @@ def event_psth(spike_fr, align_frames, window, dt,
         seconds per video frame
     sigma_frames : float
         Gaussian smoothing sigma in frames (0 = no smoothing)
-    keep : bool array, shape (n_events,) or None
-        events to include.  Events whose window leaves the session are dropped
-        on top of this.
+    keep : bool array or None
+        events to include.  Shape (n_events,) applies the same selection to
+        every cell; shape (n_cells, n_events) gives each cell its own set of
+        events, which is what a per-cell drift cut needs.  Events whose
+        window leaves the session are dropped on top of either.
 
     Returns
     -------
-    psth : array, shape (n_cells, n_t)   -- all zeros if no event survives
-    n_used : int
+    psth : array, shape (n_cells, n_t)   -- zeros for a cell with no events
+    n_used : int array, shape (n_cells,)
     '''
     spike_fr = np.asarray(spike_fr)
     align_frames = np.asarray(align_frames).astype(int)
@@ -213,22 +207,47 @@ def event_psth(spike_fr, align_frames, window, dt,
     n_t = fr_end - fr_start
 
     in_bounds = (align_frames + fr_start >= 0) & (align_frames + fr_end <= n_frames)
+    per_cell = None
     if keep is not None:
-        in_bounds &= np.asarray(keep).astype(bool)
+        keep = np.asarray(keep).astype(bool)
+        if keep.ndim == 1:
+            in_bounds &= keep
+        else:
+            in_bounds &= keep.any(axis=0)   # no cell wants it: drop it outright
+            per_cell = keep
     used = align_frames[in_bounds]
 
     if used.shape[0] == 0:
-        return np.zeros((n_cells, n_t)), 0
+        return np.zeros((n_cells, n_t)), np.zeros(n_cells, dtype=int)
 
     snippets = np.stack([spike_fr[:, a + fr_start: a + fr_end] for a in used], axis=0)
-    psth = snippets.mean(axis=0) / dt
+
+    if per_cell is None:
+        psth = snippets.mean(axis=0) / dt
+        n_used = np.full(n_cells, used.shape[0], dtype=int)
+    else:
+        # per-cell selection: nan out the events a cell is not using and take
+        # a nanmean, so all cells are still averaged in one pass.  Costs a
+        # float copy of the snippet block, which is the price of not looping
+        per_cell = per_cell[:, in_bounds]
+        snippets = snippets.astype(float)
+        snippets[~per_cell.T] = np.nan
+        n_used = per_cell.sum(axis=1).astype(int)
+        # a cell with nothing left is left at zero: nanmean of an all-nan
+        # slice is a nan plus a RuntimeWarning, and a nan blanks the panel
+        psth = np.zeros((n_cells, n_t))
+        drawn = n_used > 0
+        if np.any(drawn):
+            psth[drawn] = np.nanmean(snippets[:, drawn], axis=0) / dt
+
     if sigma_frames > 0:
         psth = gaussian_filter1d(psth, sigma_frames, axis=1, mode='nearest')
-    return psth, int(used.shape[0])
+    return psth, n_used
 
 
 def event_psth_on_off(spike_fr, onsets, offsets, on_window, off_window, dt,
-                      groups=None, sigma_frames=0.0, min_duration=None):
+                      groups=None, sigma_frames=0.0, min_duration=None,
+                      keep=None):
     '''
     Onset- and offset-aligned tuning curves, optionally split into groups
     (feeder identity, occupied vs. empty, ...).
@@ -250,13 +269,19 @@ def event_psth_on_off(spike_fr, onsets, offsets, on_window, off_window, dt,
         drop events shorter than this many frames.  Set it to the combined
         window length to stop the onset and offset windows from overlapping
         and double-counting the middle of a short event.
+    keep : bool array, shape (n_events,) or (n_cells, n_events) or None
+        events to include, per event or per cell-and-event.  The same mask is
+        used for the onset and the offset curve, so a group's two curves are
+        still averages over the same events for any given cell.
 
     Returns
     -------
     onset_psth  : array, shape (n_cells, n_groups, n_t_on)
     offset_psth : array, shape (n_cells, n_groups, n_t_off)
     group_ids   : array, shape (n_groups,)
-    n_used      : int array, shape (n_groups,)   events behind each curve
+    n_used      : int array, shape (n_cells, n_groups)
+        events behind each curve.  Per cell because `keep` may be, and every
+        row is identical when it is not.
     '''
     spike_fr = np.asarray(spike_fr)
     onsets = np.asarray(onsets).astype(int)
@@ -273,7 +298,10 @@ def event_psth_on_off(spike_fr, onsets, offsets, on_window, off_window, dt,
     n_t_off = off_window[1] - off_window[0]
     onset_psth = np.zeros((n_cells, n_groups, n_t_on))
     offset_psth = np.zeros((n_cells, n_groups, n_t_off))
-    n_used = np.zeros(n_groups, dtype=int)
+    n_used = np.zeros((n_cells, n_groups), dtype=int)
+
+    if keep is not None:
+        keep = np.asarray(keep).astype(bool)
 
     # an event is usable only if both of its windows are complete
     n_frames = spike_fr.shape[1]
@@ -288,13 +316,14 @@ def event_psth_on_off(spike_fr, onsets, offsets, on_window, off_window, dt,
         sel = usable & (groups == g)
         if not np.any(sel):
             continue
+        g_keep = None if keep is None else keep[..., sel]
         on_psth, n_on = event_psth(spike_fr, onsets[sel], on_window, dt,
-                                   sigma_frames=sigma_frames)
+                                   sigma_frames=sigma_frames, keep=g_keep)
         off_psth, _ = event_psth(spike_fr, offsets[sel], off_window, dt,
-                                 sigma_frames=sigma_frames)
+                                 sigma_frames=sigma_frames, keep=g_keep)
         onset_psth[:, g_idx] = on_psth
         offset_psth[:, g_idx] = off_psth
-        n_used[g_idx] = n_on
+        n_used[:, g_idx] = n_on
 
     return onset_psth, offset_psth, group_ids, n_used
 
@@ -320,6 +349,42 @@ def shared_ylim(*psth_blocks, pad=1.0, minimum=1.0):
             continue
         top = max(top, float(np.max(finite)))
     return max(float(np.ceil(top)) + pad, minimum)
+
+
+def plot_psth_trace(ax, t_pts, rate, dt, color, sigma_frames=0.0, lw=3,
+                    label=None, **kwargs):
+    '''
+    Draw one tuning curve, as a smoothed line or as an unfilled per-bin
+    histogram depending on how the PSTH was computed.
+
+    sigma_frames > 0  -- the curve was Gaussian-smoothed, so a line is honest
+                         about it and ax.plot is used as before.
+    sigma_frames == 0 -- nothing was smoothed, so the trace is drawn as an
+                         unfilled step histogram: bin i spans
+                         [t_pts[i], t_pts[i] + dt), matching the half-open
+                         frame windows used everywhere else in this module.
+                         A one-frame change then shows as a step instead of
+                         being interpolated into a slope by ax.plot.
+
+    Pass the same sigma_frames given to event_psth / event_psth_on_off and
+    the two can never disagree about what is being shown.
+
+    Returns the Line2D handle, or None if t_pts is empty.
+    '''
+    t_pts = np.asarray(t_pts)
+    rate = np.asarray(rate)
+    if t_pts.shape[0] == 0:
+        return None
+
+    if sigma_frames > 0:
+        line, = ax.plot(t_pts, rate, color=color, lw=lw, label=label, **kwargs)
+        return line
+
+    # close the last bin: without this the final frame is a single point
+    # rather than a dt-wide step, and the trace looks like it stops short
+    line, = ax.step(np.append(t_pts, t_pts[-1] + dt), np.append(rate, rate[-1]),
+                    where='post', color=color, lw=lw, label=label, **kwargs)
+    return line
 
 
 def raster_marker_size(ax, fig, n_rows, max_area=10000.0):

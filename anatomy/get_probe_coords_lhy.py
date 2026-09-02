@@ -9,11 +9,17 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(script_dir, "..", "methods"))
 sys.path.append(os.path.join(script_dir, "..", "neural"))
 import format_waveform_data, waveform_analysis
-from estimate_target_coords import rotate_AP, rotate_ML, convert_head_to_stereo, probe_dir_brain
+from estimate_target_coords import (rotate_AP, rotate_ML, convert_head_to_stereo,
+                                    probe_dir_brain, hist_rad_from_pitch)
 
 '''
 Functions for localizing the probe in the brain for LHY recordings
 '''
+
+# AP position of the LHy center relative to lambda, in um.
+# TODO possibly use ant. com. as AP reference instead
+LHY_CENTER_AP = 1300
+
 '''
 Utility functions for channel mapping
 '''
@@ -63,16 +69,16 @@ def lhy_rel2abs(rel_ap):
 
     Positive is anterior of center, negative is posterior.
 
-    The lateral hypothalamus center is roughly 1 mm anterior of lambda.
+    The lateral hypothalamus center is LHY_CENTER_AP um anterior of lambda.
     '''
-    return 1000 + rel_ap
+    return LHY_CENTER_AP + rel_ap  
 
 def lhy_abs2rel(abs_ap):
     '''
     Given AP position relative to lamda, get positioning relative
     to lateral hypothalamus center.
     '''
-    return abs_ap - 1000
+    return abs_ap - LHY_CENTER_AP  
 
 def dmdl_rel2abs(rel_ap):
     '''
@@ -170,7 +176,8 @@ def refine_ap(ml_um, approx_ap_um, shank_idx=None, shank_dist=150):
 
     return abs_ap
 
-def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle, shank_dist=150):
+def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
+                       probe_angle_rad=0.0, shank_dist=150):
     '''
     Converts relative values in mm to absolute (lamda-oriented) values in microns
     Takes AP estimate from histology and factors in known shank distance
@@ -189,9 +196,15 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle, s
         absolute [ML, AP] insertion point of each shank (um), as returned
         by convert_insert_coords
     final_depth : float
-        experimentally measured final insertion depth (um)
+        experimentally measured final insertion depth (um),
+        measured along the probe axis
     head_angle : sequence of 2 floats
         [roll_deg, pitch_deg] measured during implant
+        pitch_deg is the beak bar angle in degrees below horizontal.
+    probe_angle_rad : float
+        probe tilt toward the midline during surgery
+        (radians, positive = tip toward the midline).
+        Pass 0.0 for a vertically mounted probe.
     shank_dist : float
         known, fixed distance between shanks (um)    
 
@@ -228,16 +241,37 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle, s
     # for shanks without histology, estimate the tip coordinates
     missing = ~has_hist
     if np.any(missing):
-        # get the estimated probe track
         roll_deg, pitch_deg = head_angle
-        hist_rad = np.deg2rad(pitch_deg - 37)
-        v_brain = probe_dir_brain(hist_rad, np.deg2rad(roll_deg))  # [AP, ML, DV]
-        u_ml, u_ap, u_dv = v_brain[1], v_brain[0], v_brain[2]
+        if np.isnan(pitch_deg) or np.isnan(roll_deg):
+            raise ValueError(
+                "head_angle is NaN but tip histology is missing, so the "
+                "tip can only be estimated from the head angle -- check the "
+                "'pitch deg' / 'ML diff' / 'ML offset' columns in the anatomy sheet"
+            )
 
-        # caculate the tip location along this track
-        abs_ml[missing] = insert_coords[missing, 0] - final_depth * u_ml
-        abs_ap[missing] = insert_coords[missing, 1] - final_depth * u_ap
+        # get head angle relative to histology level and convert angles to radians
+        hist_rad = hist_rad_from_pitch(pitch_deg)
+        roll_rad = np.deg2rad(roll_deg)
+
+        # account for the probe's tilt
+        v_stereo = rotate_AP(probe_angle_rad) @ np.asarray([0., 0., 1.])
+        v_brain = probe_dir_brain(hist_rad, roll_rad, v_stereo=v_stereo)  # [AP, ML, DV]
+        u_ap, u_ml, u_dv = v_brain
+
+        # step along the track from the entry point: tip = entry + travel * v
+        abs_ml[missing] = insert_coords[missing, 0] + final_depth * u_ml
+        abs_ap[missing] = insert_coords[missing, 1] + final_depth * u_ap
         abs_dv[missing] = final_depth * u_dv
+
+        # for birds with histology, check against estimates from intended coords
+        if np.any(has_hist):
+            est_pos = np.column_stack([abs_ml[missing], abs_ap[missing]])
+            hist_pos = np.column_stack([abs_ml[has_hist], abs_ap[has_hist]])
+            gap = np.min(np.linalg.norm(est_pos[:, None, :] - hist_pos[None, :, :], axis=-1), axis=1)
+            if np.any(gap > 500):
+                print(f"  estimated tip(s) sit up to {np.max(gap):.0f} um from the nearest "
+                      f"histology-measured tip on the same probe -- check the head angle, "
+                      f"probe angle and final depth for this bird")
 
     return np.column_stack([abs_ml, abs_ap, abs_dv])
 
@@ -283,10 +317,14 @@ def convert_insert_coords(raw_insert_coords, raw_intended_coords, shank_dist=150
     return np.column_stack([abs_ml, abs_ap])
 
 
-def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords):
+def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords, hist_rad=0.0):
     '''
     Given a probe that is tilted towards the midline and tilted in the AP axis,
     convert from probe coordinates (as output by kilosort) to brain coordinates.
+
+    The shank trajectory is re-derived from the insertion and tip points, so it
+    does not depend on the head angle. hist_rad is needed only to orient the
+    probe's own AP axis (the across-shank / across-column direction) in the brain.
 
     Params
     ------
@@ -295,10 +333,14 @@ def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords):
     tip_coords : nparray, shape (n_shanks, 3)
         absolute [ML, AP, DV] of each shank's (final/deepest) tip (um)
     probe_depth : float
-        depth the probe was inserted on this session
+        depth the probe was inserted on this session, measured along the probe
+        axis (see the note on final_depth in convert_tip_coords)
     probe_coords : nparray, shape (n_channels, 2)
         local [ap, dv] coordinates along the probe for each channel
         from channel_positions.npy (dv = 0 at the probe's physical tip)
+    hist_rad : float
+        head rotation relative to the atlas orientation (radians), from
+        hist_rad_from_pitch(pitch_deg). 0.0 reproduces the old behavior.
         
     Returns
     -------
@@ -325,7 +367,8 @@ def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords):
         if not np.any(ch_mask):
             continue
 
-        # shank coordinates and trajectory in the brain
+        # shank coordinates and trajectory in the brain.
+        # NOTE: u is deliberately built as (insert - tip)
         insert_ml, insert_ap = insert_coords[s]
         tip_ml, tip_ap, tip_dv = tip_coords[s]
         ml_offset = insert_ml - tip_ml
@@ -346,18 +389,27 @@ def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords):
         ref_ap_local = np.mean(ch_ap[ch_dv==tip_dv_local])
         fine_ap_offset = ch_ap - ref_ap_local
 
+        # acount for head pitch (probe AP contains brain AP and DV components)
+        fine_ap_brain = fine_ap_offset * np.cos(hist_rad)
+        fine_dv_brain = fine_ap_offset * np.sin(hist_rad)
+
         # get the 3D brain positions
         brain_ml[ch_mask] = insert_ml - dist_from_insert * u_ml
-        brain_ap[ch_mask] = insert_ap - dist_from_insert * u_ap + fine_ap_offset
-        brain_dv[ch_mask] = dist_from_insert * u_dv
+        brain_ap[ch_mask] = insert_ap - dist_from_insert * u_ap + fine_ap_brain
+        brain_dv[ch_mask] = dist_from_insert * u_dv + fine_dv_brain
     
     return np.column_stack((brain_ml, brain_ap, brain_dv))
 
 
-def get_channel_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, tip_coords, depth):
+def get_channel_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, tip_coords, depth,
+                         hist_rad=0.0):
     '''
     Triangulates probe channel positions in the brain
     Matches each cell's best channel to its brain position
+
+    hist_rad : float
+        head rotation relative to the atlas orientation (radians),
+        passed through to probe_to_brain to orient the probe's local AP axis.
 
     Returns
     -------
@@ -392,7 +444,8 @@ def get_channel_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, tip_coor
     ch_pos_brain = probe_to_brain(insert_coords=insert_coords,
                                     tip_coords=tip_coords,
                                     probe_depth=depth,
-                                    probe_coords=ch_pos_probe)
+                                    probe_coords=ch_pos_probe,
+                                    hist_rad=hist_rad)
 
     # which shank is each channel on?
     ch_shank_idx = get_channel_shank(ch_pos_probe, n_shanks)
@@ -432,8 +485,12 @@ def get_raw_anatomy_info(session_info_file, data_dict):
 
     Measured experimentally:
     - final depth : experimentally measured tip distance from surface for histology scar
+      (along the probe axis -- see the note in convert_tip_coords if this comes
+      off a vertical DV drive while the probe is tilted)
     - roll deg : head tilt ML
-    - pitch deg : beak bar angle
+    - pitch deg : beak bar angle, RAW degrees below horizontal (not 90 - angle)
+    - probe angle : intended probe tilt toward the midline, degrees.
+      Optional; defaults to 0. Distinct from the histology-measured 'angle ML'.
     - intended AP : insertion AP from lambda (during implant surgery)
     - intended ML : insertion ML from midline (during implant surgery)
     '''
@@ -477,7 +534,8 @@ def get_raw_anatomy_info(session_info_file, data_dict):
         data_dict[bird]['raw_tip_coords'] = np.full((n_shanks, 3), np.nan)
         data_dict[bird]['raw_intended_coords'] = np.full((n_shanks, 2), np.nan)
         data_dict[bird]['probe_angle_ml'] = np.full(n_shanks, np.nan)
-        data_dict[bird]['head_angle'] = np.zeros(2)
+        data_dict[bird]['head_angle'] = np.full(2, np.nan)
+        data_dict[bird]['probe_angle_surgery'] = 0.0
         data_dict[bird]['final_depth'] = np.nan
 
         
@@ -512,8 +570,14 @@ def get_raw_anatomy_info(session_info_file, data_dict):
         ml_diff = row['ML diff']
         ml_offset = row['ML offset']
         roll_deg = np.rad2deg(np.arctan2(ml_diff, 2*ml_offset))
-        pitch_deg = 90 - row['pitch deg']
+        pitch_deg = row['pitch deg']
         data_dict[bird]['head_angle'] = [roll_deg, pitch_deg]
+
+        # intended probe tilt toward the midline
+        probe_angle_deg = float(row.get('probe angle', np.nan))
+        if np.isnan(probe_angle_deg):
+            probe_angle_deg = 0.0
+        data_dict[bird]['probe_angle_surgery'] = np.deg2rad(probe_angle_deg)
 
         # intended insertion coordinates -- fallback for insert_coords
         int_ml, int_ap = row['intended ML'], row['intended AP']
@@ -547,25 +611,32 @@ def convert_anatomy_info(data_dict, tol_frac=0.1):
         raw_tip = data_dict[bird]['raw_tip_coords']
         final_depth = data_dict[bird]['final_depth']
         head_angle = data_dict[bird]['head_angle']
+        probe_angle = data_dict[bird].get('probe_angle_surgery', 0.0)
 
         # convert the insertion coords
         insert_coords = convert_insert_coords(raw_insert, raw_intended)
         data_dict[bird]['insert_coords'] = insert_coords
 
         # convert the tip coords
-        tip_coords = convert_tip_coords(raw_tip, insert_coords, final_depth, head_angle)
+        tip_coords = convert_tip_coords(raw_tip, insert_coords, final_depth, head_angle,
+                                        probe_angle_rad=probe_angle)
         data_dict[bird]['tip_coords'] = tip_coords
 
         # compare the experimentally and histologically measured depths
+        has_tip_hist = ~np.isnan(raw_tip[:, 0]) & ~np.isnan(raw_tip[:, 1])
         expt_depth = data_dict[bird]['final_depth']
-        hist_depth = estimate_depth_hist(insert_coords, tip_coords)
-        if np.isnan(hist_depth):
-            print('histology missing - could not check depth')
+        if not np.any(has_tip_hist):
+            print(f'  {bird}: no tip histology - depth check skipped')
         else:
-            pct_diff = np.abs(hist_depth - expt_depth) / expt_depth
-            if pct_diff > tol_frac:
-                print(f"  {bird}: noted final depth = {expt_depth:.0f} um vs histology depth = {hist_depth:.0f} um"
-                      f"-- double-check histology measurements and insertion notes")
+            hist_depth = estimate_depth_hist(insert_coords[has_tip_hist],
+                                             tip_coords[has_tip_hist])
+            if np.isnan(hist_depth):
+                print(f'  {bird}: histology incomplete - could not check depth')
+            else:
+                pct_diff = np.abs(hist_depth - expt_depth) / expt_depth
+                if pct_diff > tol_frac:
+                    print(f"  {bird}: noted final depth = {expt_depth:.0f} um vs histology depth = {hist_depth:.0f} um"
+                          f"-- double-check histology measurements and insertion notes")
 
     return data_dict
 
@@ -580,6 +651,14 @@ def save_cell_positions(data_dict, root_dir):
         insert_coords = data_dict[bird]['insert_coords']
         tip_coords = data_dict[bird]['tip_coords']
         session_list = data_dict[bird]['all_sessions']
+
+        # head rotation relative to the atlas orientation
+        pitch_deg = data_dict[bird]['head_angle'][1]
+        if np.isnan(pitch_deg):
+            print(f'  no beak bar angle on file - not correcting channel AP/DV for head pitch')
+            hist_rad = 0.0
+        else:
+            hist_rad = hist_rad_from_pitch(pitch_deg)
 
         for session_id in session_list:
             session_data = data_dict[bird][session_id]
@@ -596,7 +675,8 @@ def save_cell_positions(data_dict, root_dir):
             # channel and cell positions in brain coordinates
             depth = session_data['depth']
             ch_pos, ch_shank_idx, cell_pos, cell_shank_idx = get_channel_cell_pos(
-                session_dir, ks_dir, ephys_dir, insert_coords, tip_coords, depth
+                session_dir, ks_dir, ephys_dir, insert_coords, tip_coords, depth,
+                hist_rad=hist_rad
             )
             
             # save everything

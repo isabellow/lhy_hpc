@@ -275,14 +275,17 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
 # ---------------------------------------------------------------------------
 # Step 4: behavior-aligned spikes per session (ported from behavior/save_aligned_spikes.py)
 # ---------------------------------------------------------------------------
-def align_behavior_spikes(data_dict, bird_ids, root_dir):
+def align_behavior_spikes(data_dict, bird_ids, root_dir, overwrite=False):
     for bird in bird_ids:
         print(f'\naligning spikes to behavior for {bird}')
         for session_id in data_dict[bird]['all_sessions']:
             preprocessed = data_dict[bird][session_id]['preprocessed_data']
             if ('behavior' in preprocessed) and ('ephys' in preprocessed):
                 session_dir = f"{root_dir}{bird}/{bird}_{session_id}/"
-                neural_analysis.align_spikes_behavior(session_dir)
+                if (not overwrite) and os.path.isfile(f"{session_dir}/aligned_spikes.npy"):
+                    continue
+                else:
+                    neural_analysis.align_spikes_behavior(session_dir)
 
 # ---------------------------------------------------------------------------
 # Step 5: stim / antidromic response data (ported from stim/save_all_stim_data.py)
@@ -696,7 +699,7 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
     np.save(DATA_FILE, data_dict)
 
     print("\n=== behavior-aligned spikes (per-session files) ===")
-    align_behavior_spikes(data_dict, bird_ids, ROOT_DIR)
+    align_behavior_spikes(data_dict, bird_ids, ROOT_DIR, overwrite=overwrite)
 
     if get_stim_data:
         print("\n=== stim / antidromic response data ===")
@@ -719,7 +722,7 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
 
 if __name__ == "__main__":
     # Example: add a couple of new birds to an existing (or new) struct
-    build_or_update_session_data(new_bird_ids=['LMN86'], overwrite=True)
+    build_or_update_session_data(new_bird_ids=None, overwrite=False)
 
 #     # Example: just pick up new sessions for birds already in the dict
-#     build_or_update_session_data(new_bird_ids=None)
+#     build_or_update_session_data(new_bird_ids=['LMN86'])

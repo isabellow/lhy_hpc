@@ -129,6 +129,75 @@ def trial_amplitudes(spike_frames, amps, align_frames, half_width,
     return amp_trial, n_spikes
 
 
+def select_trials_by_drift(spike_fr, align_frames, dt, metric, thresh,
+                           t_window, amp_data=None, min_spikes=1):
+    '''
+    Per-cell trial mask: True where the unit's local firing rate or spike
+    amplitude, measured in a window centered on the trial, is at least
+    `thresh` times its session average.
+
+    Meant to be applied before the tuning curves are computed -- a trial
+    where the unit looks like it has drifted off the probe should not feed
+    a curve at all -- and only then to feed subsample_for_raster, which caps
+    how many of the surviving trials get drawn.  The two cuts do different
+    jobs (data quality vs. plot legibility) and should stay separate.
+
+    `t_window` should be much wider than the response window: it is a
+    measure of how the unit is doing around the trial, not of the response.
+    A window as short as the tuning curve makes the cut depend on the very
+    modulation being plotted, which selects trials by effect size.
+
+    Params
+    ------
+    spike_fr : array, shape (n_cells, n_frames)
+        spike counts per video frame, after the cell filter
+    align_frames : int array, shape (n_events,)   trial centers, in frames
+    dt : float
+    metric : 'firing rate' | 'amplitude'
+    thresh : float          keep trials with metric >= thresh
+    t_window : float        seconds, centred on each trial
+    amp_data : list or None
+        load_spike_amplitudes output; required for metric='amplitude'
+    min_spikes : int
+        metric='amplitude' only -- trials with fewer spikes in the window
+        have no measurement and are dropped rather than kept on no evidence
+
+    Returns
+    -------
+    keep : bool array, shape (n_cells, n_events)
+    '''
+    spike_fr = np.asarray(spike_fr)
+    align_frames = np.asarray(align_frames).astype(int)
+    n_cells, n_frames = spike_fr.shape
+    half_width = int(round((t_window / 2) / dt))
+
+    if metric == 'firing rate':
+        # windows clipped at the session edges, so a trial near either end
+        # still gets a rate, just over fewer frames
+        # TODO update this so instead of clipping it shifts the window to
+        #   start/end at session bounds but still avg over same time window
+        lo = np.clip(align_frames - half_width, 0, n_frames)
+        hi = np.clip(align_frames + half_width + 1, 0, n_frames)
+        csum = np.zeros((n_cells, n_frames + 1))
+        csum[:, 1:] = np.cumsum(spike_fr, axis=1)
+        rate = (csum[:, hi] - csum[:, lo]) / (np.maximum(hi - lo, 1) * dt)
+        ref = spike_fr.mean(axis=1) / dt
+        with np.errstate(invalid='ignore', divide='ignore'):
+            metric_trial = rate / ref[:, None]
+    elif metric == 'amplitude':
+        if amp_data is None:
+            raise ValueError("metric='amplitude' needs amp_data")
+        metric_trial = np.array([
+            trial_amplitudes(amp_data[c][0], amp_data[c][1], align_frames,
+                             half_width, min_spikes=min_spikes)[0]
+            for c in range(n_cells)])
+    else:
+        raise ValueError("metric must be 'firing rate' or 'amplitude', "
+                         f"got {metric!r}")
+
+    return np.isfinite(metric_trial) & (metric_trial >= thresh)
+
+
 def plot_amp_panel(ax, amp_trial, groups_sorted=None, block_edges=(),
                    colors=None, default_color='xkcd:gray', divider_lw=0.8,
                    lw=0.8, label='amp.', axis_label=12, xmax=None):

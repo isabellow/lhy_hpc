@@ -38,10 +38,10 @@ data_file = f"{root_dir}good_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
 
 ''' Data params '''
-bird = 'TRQ82'  # update as needed
+bird = 'LMN86'  # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
-session_list = ['260825']
+session_list = ['260831']
 fps = 50  # Hz
 dt = 1 / fps
 

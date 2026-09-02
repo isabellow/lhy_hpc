@@ -578,7 +578,7 @@ class SpikeVideoGUI(QtWidgets.QMainWindow):
         self.eth_plot.getAxis('left').setTicks([[]])     # keep the width, drop
         self.eth_plot.getAxis('left').setWidth(AXIS_WIDTH)   # the labels
         self.eth_plot.addItem(pg.InfiniteLine(
-            pos=0.0, angle=90, pen=pg.mkPen((220, 20, 20), width=1)))
+            pos=0.0, angle=90, pen=pg.mkPen((220, 20, 20), width=3)))
         self.bottom.ci.layout.setRowFixedHeight(0, 9)
 
         self.hm_plot = self.bottom.addPlot(row=1, col=0)
@@ -622,7 +622,7 @@ class SpikeVideoGUI(QtWidgets.QMainWindow):
         self._apply_window_geometry()
 
         self.center_line = pg.InfiniteLine(
-            pos=0.0, angle=90, pen=pg.mkPen((220, 20, 20), width=1))
+            pos=0.0, angle=90, pen=pg.mkPen((220, 20, 20), width=3))
         self.center_line.setZValue(20)
         self.hm_plot.addItem(self.center_line)
 

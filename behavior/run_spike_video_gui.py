@@ -33,8 +33,8 @@ from spike_video_gui import launch, sort_cells_by_peak_time  # noqa: F401
 #  PARAMETERS                                                                  #
 # --------------------------------------------------------------------------- #
 
-bird = 'TRQ82'
-session_id = '260813'
+bird = 'LMN86'
+session_id = '260831'
 root_dir = 'Z:/Isabel/data/lhy_implants/'
 session_dir = f'{root_dir}{bird}/{bird}_{session_id}/'
 
@@ -48,7 +48,7 @@ data_dir = f'{session_dir}behavior_data/'
 sort_to_use = 'rastermap' # or try 'waveform', 'depth'
 
 # which camera to show -- expects <vid_dir>/<cam_id>.avi
-cam_id = 'red_cam'
+cam_id = 'blue_cam'
 
 # 'raster' draws every spike as a tick the height of its cell's row, jittered
 # within its video frame; 'heatmap' draws normalized firing rate.  Switch live
@@ -72,7 +72,7 @@ smoothing = None
 
 # phy cluster IDs to plot; None = all rows of aligned_spikes.npy
 # cell_ids = None
-cell_ids = [31, 44, 82, 172, 270]
+cell_ids = [42, 15, 18, 34, 53, 61]
 
 # indices that sort the rows of aligned_spikes.npy into the desired order;
 # None = keep the order they are stored in

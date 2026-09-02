@@ -57,8 +57,8 @@ session_info_file = f"{root_dir}good_sessions.xlsx"
 ''' Data params '''
 bird = 'LMN86'  # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
-session_list = data_dict[bird]['all_sessions']
-# session_list = ['260825']
+# session_list = data_dict[bird]['all_sessions']
+session_list = ['260831']
 fps = 50  # Hz
 dt = 1 / fps
 
@@ -87,7 +87,7 @@ removal_rule = 'cached_first'
 use_init_counts = True
 
 # a group needs at least this many usable events to get a tuning curve
-min_events_per_group = 1
+min_events_per_group = 2
 
 # max events plotted in the raster
 max_events_per_group = 100
@@ -118,13 +118,13 @@ fr_on_start, fr_on_end, timepoints_on = window_frames(-0.3, 0.3, dt)
 fr_off_start, fr_off_end, timepoints_off = window_frames(-0.3, 0.3, dt)
 
 # raster window centered on event onset
-event_window = 2                                    # seconds, total
+event_window = 1                                    # seconds, total
 fr_halfwidth_raster = int((event_window / 2) / dt)   # frames each side
 raster_t_pts = np.arange(-fr_halfwidth_raster, fr_halfwidth_raster+1) * dt
 
 # Gaussian smoothing for the tuning curves, in frames
 # 1 frame = 20 ms at 50 fps; set 0 for no smoothing at all
-sigma_frames = fps // 50
+sigma_frames = 0 # fps // 50
 
 # style — checks green, retrievals purple; grey = baited
 # keyed by status code so a missing group can never shift the colours
