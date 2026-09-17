@@ -14,11 +14,17 @@ from estimate_target_coords import (rotate_AP, rotate_ML, convert_head_to_stereo
 
 '''
 Functions for localizing the probe in the brain for LHY recordings
+
+Conventions (brain frame, um):
+- ML is signed: + = implanted hemisphere, - = contralateral.
+- AP is relative to lambda (+ = anterior), DV is depth below the surface.
+- Shank A in the sheet is the shank with the smallest x in channel_positions.npy,
+  and higher shank indices are assumed to sit more anterior.
+- Session depths and 'final depth' are drive depths along the probe axis, in um.
 '''
 
-# AP position of the LHy center relative to lambda, in um.
-# TODO possibly use ant. com. as AP reference instead
-LHY_CENTER_AP = 1300
+# AP position of the anterior commissure relative to lambda, in um.
+ANT_COM_AP = 900
 
 '''
 Utility functions for channel mapping
@@ -64,21 +70,21 @@ Anatomical functions
 '''
 def lhy_rel2abs(rel_ap):
     '''
-    Given the tip position relative to the center of the lateral 
-    hypothalamus, get the AP position relative to lambda (in microns).
+    Given the tip position relative to the anterior commissure,
+    get the AP position relative to lambda (in microns).
 
-    Positive is anterior of center, negative is posterior.
+    Positive is anterior of the commissure, negative is posterior.
 
-    The lateral hypothalamus center is LHY_CENTER_AP um anterior of lambda.
+    The anterior commissure is ANT_COM_AP um anterior of lambda.
     '''
-    return LHY_CENTER_AP + rel_ap  
+    return ANT_COM_AP + rel_ap  
 
 def lhy_abs2rel(abs_ap):
     '''
     Given AP position relative to lamda, get positioning relative
-    to lateral hypothalamus center.
+    to the anterior commissure.
     '''
-    return abs_ap - LHY_CENTER_AP  
+    return abs_ap - ANT_COM_AP  
 
 def dmdl_rel2abs(rel_ap):
     '''
@@ -100,21 +106,30 @@ def dmdl_abs2rel(abs_ap):
 '''
 Geometric functions
 '''
-def ml_to_ap_dist(ml_A, ml_B, shank_dist=150):
+def ml_to_ap_dist(ml_A, ml_B, shank_dist=150, hist_rad=0.0, at_surface=False):
     '''
     Refine the triangulation of a multishank probe
     using the known difference between shanks.
 
     Given:
-    - the ML position of each shank relative to the midline
+    - the signed ML position of each shank relative to the midline
     - the known distance between shanks
+    - the head rotation relative to the atlas (hist_rad)
 
-    Calculate the expected AP distance between shanks.
+    Calculate the expected brain-frame AP distance between shanks.
+
+    With the head pitched away from the atlas angle, the probe's across-shank
+    axis points along [AP, DV] = [cos, sin](hist_rad) in the brain, so shank
+    tips are closer in AP (x cos) while insertion points on the brain surface
+    are farther apart (/ cos).
     '''
     ml_diff = ml_A - ml_B
-    ap_dist = np.sqrt(shank_dist**2 - ml_diff**2)
+    if np.abs(ml_diff) > shank_dist:
+        print(f"  WARNING: shanks differ by {np.abs(ml_diff):.0f} um in ML, more than the "
+              f"{shank_dist:.0f} um shank spacing -- check the ML values and their signs")
+    ap_dist = np.sqrt(np.clip(shank_dist**2 - ml_diff**2, 0, None))
 
-    return ap_dist
+    return ap_dist / np.cos(hist_rad) if at_surface else ap_dist * np.cos(hist_rad)
 
 
 def estimate_depth_hist(insert_coords, tip_coords):
@@ -149,7 +164,7 @@ def estimate_depth_hist(insert_coords, tip_coords):
 '''
 Localization functions
 '''
-def refine_ap(ml_um, approx_ap_um, shank_idx=None, shank_dist=150):
+def refine_ap(ml_um, approx_ap_um, shank_idx=None, shank_dist=150, hist_rad=0.0, at_surface=False):
     '''
     Given per-shank ML/AP histology estimates (already in microns),
     re-centers the AP estimates using the known, fixed AP distance
@@ -166,7 +181,8 @@ def refine_ap(ml_um, approx_ap_um, shank_idx=None, shank_dist=150):
     else:
         ap_steps = np.asarray([
             ml_to_ap_dist(ml_um[i], ml_um[i + 1],
-                            shank_dist=shank_dist * (shank_idx[i + 1] - shank_idx[i]))
+                            shank_dist=shank_dist * (shank_idx[i + 1] - shank_idx[i]),
+                            hist_rad=hist_rad, at_surface=at_surface)
             for i in range(n_shanks - 1)
         ])
         # cumulative AP offset of each shank relative to shank 0
@@ -177,7 +193,7 @@ def refine_ap(ml_um, approx_ap_um, shank_idx=None, shank_dist=150):
     return abs_ap
 
 def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
-                       probe_angle_rad=0.0, shank_dist=150):
+                       probe_angle_rad=0.0, shank_dist=150, exclude=None):
     '''
     Converts relative values in mm to absolute (lamda-oriented) values in microns
     Takes AP estimate from histology and factors in known shank distance
@@ -190,7 +206,7 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
     ------
     raw_tip_coords : nparray, shape (n_shanks, 3)
         histology [ML, AP, DV] of each shank's tip (mm).
-        AP here is distance from the LHY center.
+        AP here is distance from the anterior commissure.
         DV is optional.
     insert_coords : ndarray, shape (n_shanks, 2)
         absolute [ML, AP] insertion point of each shank (um), as returned
@@ -206,7 +222,9 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
         (radians, positive = tip toward the midline).
         Pass 0.0 for a vertically mounted probe.
     shank_dist : float
-        known, fixed distance between shanks (um)    
+        known, fixed distance between shanks (um)
+    exclude : bool array, shape (n_shanks,), optional
+        shanks to leave out (NaN tip, not used to refine the other shanks)
 
     Returns
     -------
@@ -215,7 +233,11 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
     '''
     # data params
     n_shanks = raw_tip_coords.shape[0]
-    has_hist = ~np.isnan(raw_tip_coords[:, 0]) & ~np.isnan(raw_tip_coords[:, 1])
+    if exclude is None:
+        exclude = np.zeros(n_shanks, dtype=bool)
+    has_hist = ~np.isnan(raw_tip_coords[:, 0]) & ~np.isnan(raw_tip_coords[:, 1]) & ~exclude
+    roll_deg, pitch_deg = head_angle
+    hist_rad = 0.0 if np.isnan(pitch_deg) else hist_rad_from_pitch(pitch_deg)
 
     # preallocate variables
     abs_ml = np.full(n_shanks, np.nan)
@@ -228,7 +250,7 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
         abs_ml[hist_idx] = raw_tip_coords[hist_idx, 0] * 1000
         approx_ap_hist = lhy_rel2abs(raw_tip_coords[hist_idx, 1] * 1000)
         abs_ap[hist_idx] = refine_ap(abs_ml[hist_idx], approx_ap_hist,
-                                      shank_idx=hist_idx, shank_dist=shank_dist)
+                                      shank_idx=hist_idx, shank_dist=shank_dist, hist_rad=hist_rad)
         abs_dv[hist_idx] = raw_tip_coords[hist_idx, 2] * 1000
 
         # fill in DV with geometric estimate as needed
@@ -239,9 +261,8 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
             abs_dv[dv_missing] = np.sqrt(np.clip(final_depth**2 - ml_off**2 - ap_off**2, 0, None))
 
     # for shanks without histology, estimate the tip coordinates
-    missing = ~has_hist
+    missing = ~has_hist & ~exclude
     if np.any(missing):
-        roll_deg, pitch_deg = head_angle
         if np.isnan(pitch_deg) or np.isnan(roll_deg):
             raise ValueError(
                 "head_angle is NaN but tip histology is missing, so the "
@@ -249,8 +270,7 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
                 "'pitch deg' / 'ML diff' / 'ML offset' columns in the anatomy sheet"
             )
 
-        # get head angle relative to histology level and convert angles to radians
-        hist_rad = hist_rad_from_pitch(pitch_deg)
+        # convert roll to radians
         roll_rad = np.deg2rad(roll_deg)
 
         # account for the probe's tilt
@@ -268,7 +288,7 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
             est_pos = np.column_stack([abs_ml[missing], abs_ap[missing]])
             hist_pos = np.column_stack([abs_ml[has_hist], abs_ap[has_hist]])
             gap = np.min(np.linalg.norm(est_pos[:, None, :] - hist_pos[None, :, :], axis=-1), axis=1)
-            if np.any(gap > 500):
+            if np.any(gap > np.nan_to_num(shank_dist) + 500):
                 print(f"  estimated tip(s) sit up to {np.max(gap):.0f} um from the nearest "
                       f"histology-measured tip on the same probe -- check the head angle, "
                       f"probe angle and final depth for this bird")
@@ -276,7 +296,7 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
     return np.column_stack([abs_ml, abs_ap, abs_dv])
 
 
-def convert_insert_coords(raw_insert_coords, raw_intended_coords, shank_dist=150):
+def convert_insert_coords(raw_insert_coords, raw_intended_coords, shank_dist=150, hist_rad=0.0):
     '''
     Converts relative values in mm to absolute (lamda-oriented) values in microns
     Takes AP estimate from histology and factors in known shank distance
@@ -292,6 +312,8 @@ def convert_insert_coords(raw_insert_coords, raw_intended_coords, shank_dist=150
         (mm, relative to midline/lambda), used as a fallback
     shank_dist : float
         known, fixed distance between shanks (um)
+    hist_rad : float
+        head rotation relative to the atlas orientation (radians)
 
     Returns
     -------
@@ -312,12 +334,14 @@ def convert_insert_coords(raw_insert_coords, raw_intended_coords, shank_dist=150
         hist_idx = np.where(has_hist)[0]
         approx_ap_hist = dmdl_rel2abs(raw_insert_coords[hist_idx, 1] * 1000)
         abs_ap[hist_idx] = refine_ap(abs_ml[hist_idx], approx_ap_hist,
-                                      shank_idx=hist_idx, shank_dist=shank_dist)
+                                      shank_idx=hist_idx, shank_dist=shank_dist,
+                                      hist_rad=hist_rad, at_surface=True)
 
     return np.column_stack([abs_ml, abs_ap])
 
 
-def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords, hist_rad=0.0):
+def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords, hist_rad=0.0,
+                   final_depth=np.nan):
     '''
     Given a probe that is tilted towards the midline and tilted in the AP axis,
     convert from probe coordinates (as output by kilosort) to brain coordinates.
@@ -325,6 +349,12 @@ def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords, hist_ra
     The shank trajectory is re-derived from the insertion and tip points, so it
     does not depend on the head angle. hist_rad is needed only to orient the
     probe's own AP axis (the across-shank / across-column direction) in the brain.
+
+    Channels are anchored to the histology tip: on a session at probe_depth, the
+    probe tip sits (final_depth - probe_depth) um above the scar tip along the track
+    (below it if the session was deeper). If final_depth is NaN, channels are
+    anchored to the insertion point instead. Shanks with NaN coordinates
+    (e.g. excluded shanks) return NaN.
 
     Params
     ------
@@ -341,7 +371,9 @@ def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords, hist_ra
     hist_rad : float
         head rotation relative to the atlas orientation (radians), from
         hist_rad_from_pitch(pitch_deg). 0.0 reproduces the old behavior.
-        
+    final_depth : float
+        drive depth at which the histology scar was made (um)
+
     Returns
     -------
     brain_coords : nparray, shape (n_channels, 3)
@@ -382,7 +414,10 @@ def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords, hist_ra
         ch_ap = probe_ap_local[ch_mask]
 
         # get the distances from the shank insertion point
-        dist_from_insert = probe_depth - ch_dv
+        if np.isnan(final_depth):
+            dist_from_insert = probe_depth - ch_dv
+        else:
+            dist_from_insert = traj_len - (final_depth - probe_depth) - ch_dv
 
         # get the ap locations relative to shank tip
         tip_dv_local = np.min(ch_dv)
@@ -402,7 +437,7 @@ def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords, hist_ra
 
 
 def get_channel_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, tip_coords, depth,
-                         hist_rad=0.0):
+                         hist_rad=0.0, final_depth=np.nan):
     '''
     Triangulates probe channel positions in the brain
     Matches each cell's best channel to its brain position
@@ -410,12 +445,14 @@ def get_channel_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, tip_coor
     hist_rad : float
         head rotation relative to the atlas orientation (radians),
         passed through to probe_to_brain to orient the probe's local AP axis.
+    final_depth : float
+        drive depth of the histology scar (um), used to anchor channels to the tip
 
     Returns
     -------
     ch_pos_brain : nparray, shape (n_channels_total, 3)
         ML, AP, DV brain coords for every channel on the probe
-        (NaN for any channel excluded from kilosort4)
+        (NaN for any channel excluded from kilosort4 or on an excluded shank)
     ch_shank_idx : nparray, shape (n_channels_total,), int
         shank index for each channel (-1 for excluded channels)
     cell_pos : nparray, shape (n_cells, 3)
@@ -445,7 +482,8 @@ def get_channel_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, tip_coor
                                     tip_coords=tip_coords,
                                     probe_depth=depth,
                                     probe_coords=ch_pos_probe,
-                                    hist_rad=hist_rad)
+                                    hist_rad=hist_rad,
+                                    final_depth=final_depth)
 
     # which shank is each channel on?
     ch_shank_idx = get_channel_shank(ch_pos_probe, n_shanks)
@@ -453,7 +491,7 @@ def get_channel_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, tip_coor
     # account for excluded channels
     ch_pos_brain = remap_by_channel_map(ch_pos_brain, channel_map, n_channels_total)
     ch_shank_idx = remap_by_channel_map(ch_shank_idx, channel_map, n_channels_total, fill_value=-1).astype(int)
-    excluded_idx = np.where(np.isnan(ch_pos_brain[:, 0]))[0]
+    excluded_idx = np.where(ch_shank_idx < 0)[0]
     excluded_names = [ch_names[i] for i in excluded_idx]
     print(f"  broken/excluded channels ({len(excluded_names)}): {excluded_names}")
 
@@ -475,24 +513,28 @@ def get_raw_anatomy_info(session_info_file, data_dict):
 
     Anatomy sheet in good sessions should have (per shank):
 
+    Known:
+    - 'shank dist' : distance between probe shanks (nan for single shank probes)
+
     Measured from histology:
     - 'insert ML' : insertion point distance from midline
     - 'insert AP' : HPC width at insertion
-    - 'tip ML' : tip distance from midline
-    - 'tip AP' : tip distance from LHY center
+    - 'tip ML' : SIGNED tip distance from midline (negative if it crossed the midline)
+    - 'tip AP' : tip distance from the anterior commissure
     - 'tip DV' : tip distance from brain surface (optional)
     - 'angle ML' : histologically measured angle relative to midline
 
     Measured experimentally:
-    - final depth : experimentally measured tip distance from surface for histology scar
-      (along the probe axis -- see the note in convert_tip_coords if this comes
-      off a vertical DV drive while the probe is tilted)
+    - final depth : drive depth for the histology scar (um, along the probe axis)
     - roll deg : head tilt ML
     - pitch deg : beak bar angle, RAW degrees below horizontal (not 90 - angle)
     - probe angle : intended probe tilt toward the midline, degrees.
       Optional; defaults to 0. Distinct from the histology-measured 'angle ML'.
     - intended AP : insertion AP from lambda (during implant surgery)
     - intended ML : insertion ML from midline (during implant surgery)
+
+    Analysis:
+    - 'exclude' : checkbox, TRUE to exclude the shank from analysis
     '''
     # get the bird list
     bird_list = list(data_dict.keys())    
@@ -530,6 +572,7 @@ def get_raw_anatomy_info(session_info_file, data_dict):
     # to store anatomy info
     for bird in bird_list:
         n_shanks = n_shanks_per_bird.get(bird, 1)
+        data_dict[bird]['shank_dist'] = np.nan
         data_dict[bird]['raw_insert_coords'] = np.full((n_shanks, 2), np.nan)
         data_dict[bird]['raw_tip_coords'] = np.full((n_shanks, 3), np.nan)
         data_dict[bird]['raw_intended_coords'] = np.full((n_shanks, 2), np.nan)
@@ -537,6 +580,7 @@ def get_raw_anatomy_info(session_info_file, data_dict):
         data_dict[bird]['head_angle'] = np.full(2, np.nan)
         data_dict[bird]['probe_angle_surgery'] = 0.0
         data_dict[bird]['final_depth'] = np.nan
+        data_dict[bird]['exclude_shank'] = np.zeros(n_shanks, dtype=bool)
 
         
     # extract the raw coords
@@ -549,6 +593,13 @@ def get_raw_anatomy_info(session_info_file, data_dict):
         if bird not in data_dict:
             continue
         shank_idx = shank_id_list.index(shank)
+
+        # ---- shank excluded from analysis ----
+        data_dict[bird]['exclude_shank'][shank_idx] = (row['exclude'] == True)
+
+        # ---- known features of the probe ----
+        # distance between shanks
+        data_dict[bird]['shank_dist'] = row['shank dist']
 
         # ---- measured from histology ----
         # insertion coordinates
@@ -591,6 +642,7 @@ def convert_anatomy_info(data_dict, tol_frac=0.1):
     insert_coords and [ML, AP, DV] tip_coords (um) in 3D brain space.
 
     Fallback behavior, applied independently per shank:
+    - excluded shanks: NaN insert/tip coords, not used to refine other shanks
     - insert_coords: histology 'insert ML'/'insert AP' where available,
       else the intended ML/AP targeted during implant surgery.
     - tip_coords: histology 'tip ML'/'tip AP'/'tip DV' where available,
@@ -606,24 +658,39 @@ def convert_anatomy_info(data_dict, tol_frac=0.1):
     # convert the relative coords to absolute
     for bird in bird_list:
         # get anatomy data
+        shank_dist = data_dict[bird]['shank_dist']
         raw_insert = data_dict[bird]['raw_insert_coords']
         raw_intended = data_dict[bird]['raw_intended_coords']
         raw_tip = data_dict[bird]['raw_tip_coords']
         final_depth = data_dict[bird]['final_depth']
         head_angle = data_dict[bird]['head_angle']
         probe_angle = data_dict[bird].get('probe_angle_surgery', 0.0)
+        exclude = data_dict[bird]['exclude_shank']
+        hist_rad = 0.0 if np.isnan(head_angle[1]) else hist_rad_from_pitch(head_angle[1])
 
-        # convert the insertion coords
-        insert_coords = convert_insert_coords(raw_insert, raw_intended)
+        # convert the insertion coords (excluded shanks don't inform the others)
+        raw_insert = np.where(exclude[:, None], np.nan, raw_insert)
+        insert_coords = convert_insert_coords(raw_insert, raw_intended, shank_dist=shank_dist,
+                                              hist_rad=hist_rad)
+        insert_coords[exclude] = np.nan
         data_dict[bird]['insert_coords'] = insert_coords
 
         # convert the tip coords
         tip_coords = convert_tip_coords(raw_tip, insert_coords, final_depth, head_angle,
-                                        probe_angle_rad=probe_angle)
+                                        probe_angle_rad=probe_angle, shank_dist=shank_dist,
+                                        exclude=exclude)
         data_dict[bird]['tip_coords'] = tip_coords
 
+        # check the ML sign: the insert -> tip tilt should match the histology angle
+        ml_tilt = np.rad2deg(np.arctan2(insert_coords[:, 0] - tip_coords[:, 0], tip_coords[:, 2]))
+        angle_ml = np.rad2deg(data_dict[bird]['probe_angle_ml'])
+        flipped = (np.abs(angle_ml) > 2) & (np.sign(ml_tilt) != np.sign(angle_ml)) & np.isfinite(ml_tilt)
+        for s in np.where(flipped)[0]:
+            print(f"  {bird} shank {s}: insert -> tip tilt is {ml_tilt[s]:.1f} deg but 'angle ML' is "
+                  f"{angle_ml[s]:.1f} deg -- if this shank crossed the midline, make its tip ML negative")
+
         # compare the experimentally and histologically measured depths
-        has_tip_hist = ~np.isnan(raw_tip[:, 0]) & ~np.isnan(raw_tip[:, 1])
+        has_tip_hist = ~np.isnan(raw_tip[:, 0]) & ~np.isnan(raw_tip[:, 1]) & ~exclude
         expt_depth = data_dict[bird]['final_depth']
         if not np.any(has_tip_hist):
             print(f'  {bird}: no tip histology - depth check skipped')
@@ -650,6 +717,7 @@ def save_cell_positions(data_dict, root_dir):
         print(f'\nlocalizing cells for {bird}')
         insert_coords = data_dict[bird]['insert_coords']
         tip_coords = data_dict[bird]['tip_coords']
+        final_depth = data_dict[bird]['final_depth']
         session_list = data_dict[bird]['all_sessions']
 
         # head rotation relative to the atlas orientation
@@ -676,7 +744,7 @@ def save_cell_positions(data_dict, root_dir):
             depth = session_data['depth']
             ch_pos, ch_shank_idx, cell_pos, cell_shank_idx = get_channel_cell_pos(
                 session_dir, ks_dir, ephys_dir, insert_coords, tip_coords, depth,
-                hist_rad=hist_rad
+                hist_rad=hist_rad, final_depth=final_depth
             )
             
             # save everything
