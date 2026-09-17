@@ -10,8 +10,10 @@ from format_waveform_data import cluster_ids_for_session
 from cell_filters import filter_cells, apply_cell_filter
 from event_psth import (window_frames, build_raster, raster_scatter,
                         sort_events_by_duration, subsample_for_raster,
-                        event_psth_on_off, shared_ylim, raster_marker_size)
+                        event_psth_on_off, shared_ylim, raster_marker_size,
+                        plot_psth_trace)
 from format_behavior_data import load_behavior_data, get_eating_bouts
+from spike_amplitudes import load_spike_amplitudes, select_trials_by_drift
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
@@ -30,7 +32,7 @@ data_file = f"{root_dir}good_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
 
 ''' Data params '''
-bird = 'LMN86'  # update as needed
+bird = 'LIM64'  # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
 fps = 50  # Hz
@@ -52,8 +54,17 @@ CELL_FILTERS = dict(
 )
 
 ''' Event params '''
-# max events plotted in the raster (TC uses all events)
+# max events plotted in the raster (TC uses every selected bout)
 max_events = 200
+
+''' Per-cell trial selection (unit drift) '''
+# Drop bouts where the unit looks unhealthy BEFORE the tuning curve is
+# computed, so each cell gets its own set of bouts.  The raster then shows
+# that cell's surviving bouts, subsampled to max_events as usual.
+subsample_drift = False
+subsample_metric = 'firing rate'   # 'firing rate' | 'amplitude'
+subsample_thresh = 0.5             # keep bouts >= this x the session average
+thresh_t_window = 60.0             # seconds centred on the bout
 
 ''' Plotting params '''
 # tuning-curve windows (seconds) relative to bout onset / offset
@@ -121,28 +132,32 @@ for session_id in behavior_sessions:
     n_eat_true = eat_onsets.shape[0]
     print(f'  {n_eat_true} eating bouts')
 
-    ''' Tuning curves always use every bout '''
+    ''' Per-cell bout selection, before anything is averaged '''
+    trial_keep = None
+    if subsample_drift:
+        amp_data = None
+        if subsample_metric == 'amplitude':
+            session_data = data_dict[bird][session_id]
+            ks_dir = f"{bird}_{session_data['ephys_id']}/{session_data['ks_folder']}/"
+            amp_data = load_spike_amplitudes(session_dir, data_dir, ks_dir,
+                                             cell_ids, n_frames, fps=fps)
+        trial_keep = select_trials_by_drift(spike_fr, eat_onsets, dt,
+                                      subsample_metric, subsample_thresh,
+                                      thresh_t_window, amp_data=amp_data)
+        print(f'  {subsample_metric} cut keeps '
+              f'{trial_keep.sum(axis=1).min()}-'
+              f'{trial_keep.sum(axis=1).max()} of '
+              f'{n_eat_true} bouts per cell')
+
+    ''' Tuning curves, from each cell's selected bouts '''
     on_psth, off_psth, _, n_used = event_psth_on_off(
         spike_fr, eat_onsets, eat_offsets,
         (fr_on_start, fr_on_end), (fr_off_start, fr_off_end), dt,
-        sigma_frames=sigma_frames)
-    n_eat_used = int(n_used[0])
-    print(f'  tuning curves from {n_eat_used} eating bouts (complete windows only)')
+        sigma_frames=sigma_frames, keep=trial_keep)
+    print(f'  tuning curves from up to {int(n_used[:, 0].max())} eating bouts '
+          '(complete windows only)')
 
-    ''' Subsample rows for the raster as-needed '''
     raster_seed = zlib.crc32(f'{bird}_{session_id}_eat'.encode()) & 0xffffffff
-    raster_rng = np.random.default_rng(raster_seed)
-    r_onsets, r_offsets, _, _, n_total_shown = subsample_for_raster(
-        eat_onsets, eat_offsets, max_per_group=max_events, rng=raster_rng)
-    n_eat_raster = r_onsets.shape[0]
-    if n_total_shown[0] > max_events:
-        print(f'  showing {max_events}/{n_total_shown[0]} eating bouts in the raster')
-
-    # raster order: by duration, onset-aligned so offset is what gets marked
-    order, _ = sort_events_by_duration(r_onsets, r_offsets)
-    durations = (r_offsets - r_onsets)[order]
-    offset_ticks = np.clip(durations * dt, 0, raster_t_pts[-1])
-    align_frames = r_onsets[order]
 
     ''' Plot '''
     # 3 visible panels (raster | onset PSTH | offset PSTH); column 1 is a
@@ -176,6 +191,22 @@ for session_id in behavior_sessions:
 
         rng = np.random.default_rng(int(cell_id) * 7919)
 
+        # ── Raster rows: this cell's selected bouts, then subsample ───────
+        # rows are per cell because the drift cut is; the seed is not, so
+        # with subsample_drift off every cell shows the same bouts
+        sel = slice(None) if trial_keep is None else trial_keep[c_idx]
+        r_onsets, r_offsets, _, _, _ = subsample_for_raster(
+            eat_onsets[sel], eat_offsets[sel],
+            max_per_group=max_events,
+            rng=np.random.default_rng(raster_seed))
+        n_eat_raster = r_onsets.shape[0]
+
+        # order by duration, onset-aligned so the offset is what gets marked
+        order, _ = sort_events_by_duration(r_onsets, r_offsets)
+        align_frames = r_onsets[order]
+        offset_ticks = np.clip((r_offsets - r_onsets)[order] * dt,
+                               0, raster_t_pts[-1])
+
         # ── Raster, aligned to onset, offsets marked ──────────────────────
         raster = build_raster(spike_fr[c_idx], align_frames, fr_halfwidth_raster)
         spk_s = raster_marker_size(ax[0], f, n_eat_raster)
@@ -187,8 +218,10 @@ for session_id in behavior_sessions:
                      color='k', marker='|', lw=event_lw, s=spk_s / 2, zorder=2)
 
         # ── Tuning curves ──────────────────────────────────────────────────
-        ax[2].plot(timepoints_on, on_psth[c_idx, 0], lw=psth_lw, color=eat_color)
-        ax[3].plot(timepoints_off, off_psth[c_idx, 0], lw=psth_lw, color=eat_color)
+        plot_psth_trace(ax[2], timepoints_on, on_psth[c_idx, 0], dt, eat_color,
+                        sigma_frames=sigma_frames, lw=psth_lw)
+        plot_psth_trace(ax[3], timepoints_off, off_psth[c_idx, 0], dt, eat_color,
+                        sigma_frames=sigma_frames, lw=psth_lw)
         for col, t_pts in [(2, timepoints_on), (3, timepoints_off)]:
             ax[col].vlines(0, 0, max_fr, colors='k', linestyles='dashed', lw=event_lw)
             ax[col].hlines(avg_fr_session[c_idx], t_pts[0], t_pts[-1],
@@ -208,7 +241,8 @@ for session_id in behavior_sessions:
         ax[3].set_yticks([])
 
         # ── Labels ─────────────────────────────────────────────────────────
-        ax[0].set_ylabel(f'eating bouts (n={n_eat_true})', fontsize=axis_label)
+        ax[0].set_ylabel(f'eating bouts (n={int(n_used[c_idx, 0])})',
+                         fontsize=axis_label)
         ax[0].set_xlabel('time from bout onset (s)', fontsize=axis_label)
         ax[2].set_xlabel('time from onset (s)', fontsize=axis_label)
         ax[3].set_xlabel('time from offset (s)', fontsize=axis_label)

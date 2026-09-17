@@ -11,10 +11,12 @@ from cell_filters import filter_cells, apply_cell_filter
 from event_psth import (window_frames, build_raster, raster_scatter,
                         sort_events_by_duration, sort_events_by_time_group, 
                         subsample_for_raster,
-                        event_psth_on_off, shared_ylim, raster_marker_size)
+                        event_psth_on_off, shared_ylim, raster_marker_size,
+                        plot_psth_trace)
 from format_behavior_data import (load_behavior_data, get_checks_raw,
                                   get_visits_raw, get_site_occupancy)
 from spike_amplitudes import (load_spike_amplitudes, trial_amplitudes,
+                              select_trials_by_drift,
                               plot_amp_panel)
 
 import matplotlib.pyplot as plt
@@ -70,6 +72,17 @@ sort_by_duration = False
 
 # skip plotting a session if any group has fewer than min_events_per_group
 skip_too_few_events = False
+
+''' Per-cell trial selection (unit drift) '''
+# Drop events where the unit looks unhealthy BEFORE the tuning curves are
+# computed, so each cell's curves and its raster are built from the same set
+# of events.  max_events_per_group above then caps how many of THOSE get drawn.
+# thresh_t_window should be much wider than the tuning-curve window: it asks
+# how the unit is doing around the event, not how it responds to it.
+subsample_drift = False
+subsample_metric = 'firing rate'   # 'firing rate' | 'amplitude'
+subsample_thresh = 0.5             # keep events >= this x the session average
+thresh_t_window = 60.0             # seconds centred on the event
 
 ''' Amplitude panel params '''
 # mean KS spike amplitude within the event's raster window, 
@@ -203,64 +216,45 @@ for session_id in behavior_sessions:
         n_occ_true = int(np.sum(groups == 1))
         n_emp_true = int(np.sum(groups == 0))
 
-        # compute tuning curves from every event
+        # per-cell event selection, before anything is averaged
+        trial_keep = None
+        if subsample_drift:
+            trial_keep = select_trials_by_drift(spike_fr, onsets, dt,
+                                          subsample_metric, subsample_thresh,
+                                          thresh_t_window, amp_data=amp_data,
+                                          min_spikes=amp_min_spikes)
+            print(f'  {subsample_metric} cut keeps '
+                  f'{trial_keep.sum(axis=1).min()}-'
+                  f'{trial_keep.sum(axis=1).max()} of '
+                  f'{n_events_true} {label} per cell')
+
+        # tuning curves, from each cell's selected events
         on_psth, off_psth, group_ids, n_used = event_psth_on_off(
             spike_fr, onsets, offsets,
             (fr_on_start, fr_on_end), (fr_off_start, fr_off_end), dt,
-            groups=groups, sigma_frames=sigma_frames)
+            groups=groups, sigma_frames=sigma_frames, keep=trial_keep)
 
-        # no tuning curve if too few events
+        # no tuning curve if too few events.  n_used is per cell now, so a
+        # group can be drawn for one cell and dropped for another
         enough = n_used >= min_events_per_group
         for g_idx, g_id in enumerate(group_ids):
-            if not enough[g_idx]:
+            if not np.any(enough[:, g_idx]):
                 print(f'  excluding {group_names[g_id]} {label} from the '
-                      f'tuning curves ({int(n_used[g_idx])} usable events, '
-                      f'need {min_events_per_group})')
-
-        # subsample raster if too many events
-        raster_seed = zlib.crc32(f'{bird}_{session_id}_{key}'.encode()) & 0xffffffff
-        raster_rng = np.random.default_rng(raster_seed)
-        r_onsets, r_offsets, r_groups, _, n_total_shown = subsample_for_raster(
-            onsets, offsets, groups,
-            max_per_group=max_events_per_group, rng=raster_rng)
-        n_events = r_onsets.shape[0]
-        for g_id, n_full in n_total_shown.items():
-            if n_full > max_events_per_group:
-                print(f'  {label} group {group_names[g_id]}: showing '
-                      f'{max_events_per_group}/{n_full} events in the raster')
-
-        # raster order: occupancy block first, then duration within block
-        if sort_by_duration:
-            order, block_edges = sort_events_by_duration(r_onsets, r_offsets, r_groups)
-        else:
-            order, block_edges = sort_events_by_time_group(r_onsets, r_offsets, r_groups)
-        durations = (r_offsets - r_onsets)[order]
-        offset_ticks = np.clip(durations * dt, 0, raster_t_pts[-1])
-
-        # per-event amplitudes, ordered so row i here is row i of the raster
-        raster_amp = None
-        if amp_data is not None and n_events:
-            raster_amp = np.array([
-                trial_amplitudes(amp_data[c][0], amp_data[c][1],
-                                 r_onsets[order], fr_halfwidth_raster,
-                                 min_spikes=amp_min_spikes)[0]
-                for c in range(n_cells)])
+                      f'tuning curves ({int(n_used[:, g_idx].max())} usable '
+                      f'events at best, need {min_events_per_group})')
 
         rows.append(dict(
             key=key, label=label, colors=colors,
-            n_events=n_events, raster_amp=raster_amp,
             n_events_true=n_events_true, n_occ_true=n_occ_true, n_emp_true=n_emp_true,
-            n_total_shown=n_total_shown,
-            align_frames=r_onsets[order],
-            groups_sorted=r_groups[order],
-            offset_ticks=offset_ticks,
-            block_edges=block_edges,
+            onsets=onsets, offsets=offsets, groups=groups, keep=trial_keep,
+            raster_seed=zlib.crc32(f'{bird}_{session_id}_{key}'.encode()) & 0xffffffff,
             on_psth=on_psth, off_psth=off_psth,
             group_ids=group_ids, n_used=n_used, enough=enough,
         ))
 
     ''' Optionally skip the session if any group is underpowered '''
-    if skip_too_few_events and any(not np.all(r['enough']) for r in rows):
+    if skip_too_few_events and any(not np.all(r['enough'].any(axis=0))
+                                   for r in rows):
         print(f'  skipping {session_id}: one or more groups has < {min_events_per_group} events')
         continue
 
@@ -297,16 +291,52 @@ for session_id in behavior_sessions:
         psth_for_limit = []
         for r in rows:
             for g_idx in range(r['group_ids'].shape[0]):
-                if r['enough'][g_idx]:
+                if r['enough'][c_idx, g_idx]:
                     psth_for_limit.append(r['on_psth'][c_idx, g_idx])
                     psth_for_limit.append(r['off_psth'][c_idx, g_idx])
         max_fr = shared_ylim(*psth_for_limit)
 
+        # ── Raster rows: this cell's selected events, then subsample ────
+        # per cell because the drift cut is; the seed is not, so with
+        # subsample_drift off every cell shows the same events as before
+        draw = []
+        for r in rows:
+            sel = slice(None) if r['keep'] is None else r['keep'][c_idx]
+            r_onsets, r_offsets, r_groups, _, _ = subsample_for_raster(
+                r['onsets'][sel], r['offsets'][sel], r['groups'][sel],
+                max_per_group=max_events_per_group,
+                rng=np.random.default_rng(r['raster_seed']))
+
+            # raster order: occupancy block first, then duration within block
+            if sort_by_duration:
+                order, block_edges = sort_events_by_duration(
+                    r_onsets, r_offsets, r_groups)
+            else:
+                order, block_edges = sort_events_by_time_group(
+                    r_onsets, r_offsets, r_groups)
+            align_frames = r_onsets[order]
+            n_events = align_frames.shape[0]
+            offset_ticks = np.clip((r_offsets - r_onsets)[order] * dt,
+                                   0, raster_t_pts[-1])
+
+            # per-event amplitudes for THIS cell, in raster row order
+            raster_amp = None
+            if amp_data is not None and n_events:
+                raster_amp = trial_amplitudes(
+                    amp_data[c_idx][0], amp_data[c_idx][1], align_frames,
+                    fr_halfwidth_raster, min_spikes=amp_min_spikes)[0]
+
+            draw.append(dict(n_events=n_events, align_frames=align_frames,
+                             groups_sorted=r_groups[order],
+                             offset_ticks=offset_ticks, block_edges=block_edges,
+                             raster_amp=raster_amp,
+                             n_selected=int(np.asarray(r['onsets'][sel]).shape[0])))
+
         rng = np.random.default_rng(int(cell_id) * 7919)
 
         event_flag = True
-        for row, r in enumerate(rows):
-            n_events = r['n_events']
+        for row, (r, d) in enumerate(zip(rows, draw)):
+            n_events = d['n_events']
             if (n_events < 100) and event_flag:
                 grp_label_spacer = -0.2                
             else:
@@ -315,15 +345,15 @@ for session_id in behavior_sessions:
 
             # ── Raster, one colour block per occupancy group ───────────
             if n_events:
-                raster = build_raster(spike_fr[c_idx], r['align_frames'],
+                raster = build_raster(spike_fr[c_idx], d['align_frames'],
                                       fr_halfwidth_raster)
                 spk_s = raster_marker_size(ax[row, 0], f, n_events)
                 spk_t, spk_row = raster_scatter(raster, raster_t_pts, dt, rng=rng)
                 
                 # colour each spike by the group of the row it belongs to, so
                 # the raster and the tuning curves can never disagree
-                spk_groups = r['groups_sorted'][spk_row.astype(int)]
-                for g_id in np.unique(r['groups_sorted']):
+                spk_groups = d['groups_sorted'][spk_row.astype(int)]
+                for g_id in np.unique(d['groups_sorted']):
                     sel = spk_groups == g_id
                     ax[row, 0].scatter(spk_t[sel], spk_row[sel],
                                        color=r['colors'][g_id], marker='|',
@@ -332,32 +362,36 @@ for session_id in behavior_sessions:
                 # offset reference line, onset ticks, occupancy block divider
                 ax[row, 0].vlines(0, -0.5, n_events - 0.5,
                                   colors='k', linestyles='dashed', lw=event_lw)
-                ax[row, 0].scatter(r['offset_ticks'], np.arange(n_events),
+                ax[row, 0].scatter(d['offset_ticks'], np.arange(n_events),
                                    color='k', marker='|', lw=event_lw,
                                    s=spk_s / 2, zorder=2)
-                for edge in r['block_edges']:
+                for edge in d['block_edges']:
                     ax[row, 0].axhline(edge - 0.5, color='xkcd:gray',
                                        lw=divider_lw, zorder=3)
 
             # ── Amplitude panel ───────────────────────────────────────
             # same rows, same colours and dividers as the raster beside it
-            if r['raster_amp'] is not None and n_events:
-                plot_amp_panel(ax[row, 1], r['raster_amp'][c_idx],
-                               groups_sorted=r['groups_sorted'],
-                               block_edges=r['block_edges'],
+            if d['raster_amp'] is not None and n_events:
+                plot_amp_panel(ax[row, 1], d['raster_amp'],
+                               groups_sorted=d['groups_sorted'],
+                               block_edges=d['block_edges'],
                                colors=r['colors'], divider_lw=divider_lw,
                                lw=amp_panel_lw, axis_label=axis_label)
 
             # ── Tuning curves, one trace per occupancy group ───────────
             drawn = []
             for g_idx, g_id in enumerate(r['group_ids']):
-                if not r['enough'][g_idx]:
+                if not r['enough'][c_idx, g_idx]:
                     continue
-                ax[row, 3].plot(timepoints_on, r['on_psth'][c_idx, g_idx],
-                                lw=psth_lw, color=r['colors'][g_id])
-                ax[row, 4].plot(timepoints_off, r['off_psth'][c_idx, g_idx],
-                                lw=psth_lw, color=r['colors'][g_id])
-                drawn.append((g_id, int(r['n_used'][g_idx])))
+                plot_psth_trace(ax[row, 3], timepoints_on,
+                                r['on_psth'][c_idx, g_idx], dt,
+                                r['colors'][g_id], sigma_frames=sigma_frames,
+                                lw=psth_lw)
+                plot_psth_trace(ax[row, 4], timepoints_off,
+                                r['off_psth'][c_idx, g_idx], dt,
+                                r['colors'][g_id], sigma_frames=sigma_frames,
+                                lw=psth_lw)
+                drawn.append((g_id, int(r['n_used'][c_idx, g_idx])))
 
             for col, t_pts in [(3, timepoints_on), (4, timepoints_off)]:
                 ax[row, col].vlines(0, 0, max_fr,
@@ -390,7 +424,7 @@ for session_id in behavior_sessions:
 
             # ── Labels ─────────────────────────────────────────────────
             # Set a plain ylabel for the main label + count
-            ax[row, 0].set_ylabel(f'{r["label"]} (n={r["n_events_true"]})',
+            ax[row, 0].set_ylabel(f'{r["label"]} (n={d["n_selected"]})',
                                    fontsize=axis_label, labelpad=15)
 
             # Add "empty" and "occupied" as separate colored text objects

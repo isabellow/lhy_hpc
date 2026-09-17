@@ -12,7 +12,8 @@ from cell_filters import filter_cells, apply_cell_filter
 from event_psth import (window_frames, build_raster, raster_scatter,
                         sort_events_by_duration, sort_events_by_time_group,
                         subsample_for_raster,
-                        event_psth_on_off, shared_ylim, raster_marker_size)
+                        event_psth_on_off, shared_ylim, raster_marker_size,
+                        plot_psth_trace)
 from format_behavior_data import (load_behavior_data, get_beak_site_touches,
                                   get_cache_ints, get_retrieve_ints,
                                   get_checks_raw,
@@ -20,6 +21,7 @@ from format_behavior_data import (load_behavior_data, get_beak_site_touches,
                                   get_expectation_status,
                                   SITE_EMPTY, SITE_BAITED, SITE_CACHED)
 from spike_amplitudes import (load_spike_amplitudes, trial_amplitudes,
+                              select_trials_by_drift,
                               plot_amp_panel)
 
 import matplotlib.pyplot as plt
@@ -68,7 +70,7 @@ arena_dir = "C:/Users/Isabel/Documents/code/il_rig_control/arena_alignment/"
 arena_items_file = "arena_items_2.mat"
 
 ''' Data params '''
-bird = 'LMN86'  # update as needed
+bird = 'TRQ82'  # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
 # session_list = ['260825']
@@ -119,10 +121,21 @@ min_events_per_group = 1
 max_events_per_group = 100
 
 # sort by duration or chronological?
-sort_by_duration = False
+sort_by_duration = True
 
 # skip plotting a session if any group has fewer than min_events_per_group
 skip_too_few_events = False
+
+''' Per-cell trial selection (unit drift) '''
+# Drop touches where the unit looks unhealthy BEFORE the tuning curves are
+# computed, so each cell's curves and its rasters are built from the same set
+# of touches.  max_events_per_group above then caps how many of THOSE get
+# drawn.  thresh_t_window should be much wider than the tuning-curve window:
+# it asks how the unit is doing around the touch, not how it responds to it.
+subsample_drift = False
+subsample_metric = 'firing rate'   # 'firing rate' | 'amplitude'
+subsample_thresh = 0.5             # keep touches >= this x the session average
+thresh_t_window = 60.0             # seconds centred on the touch
 
 ''' Amplitude panel params '''
 # mean KS spike amplitude within the touch's raster window,
@@ -545,62 +558,39 @@ for session_id in behavior_sessions:
         except FileNotFoundError as err:
             print(f'  no KS amplitudes ({err.filename}), skipping the amp panel')
 
-    ''' Tuning curves from every touch '''
+    ''' Per-cell touch selection, before anything is averaged '''
+    trial_keep = None
+    if subsample_drift:
+        trial_keep = select_trials_by_drift(spike_fr, onsets, dt, subsample_metric,
+                                      subsample_thresh, thresh_t_window,
+                                      amp_data=amp_data,
+                                      min_spikes=amp_min_spikes)
+        print(f'  {subsample_metric} cut keeps '
+              f'{trial_keep.sum(axis=1).min()}-'
+              f'{trial_keep.sum(axis=1).max()} of '
+              f'{n_events_true} touches per cell')
+
+    ''' Tuning curves, from each cell's selected touches '''
     on_psth, off_psth, group_ids, n_used = event_psth_on_off(
         spike_fr, onsets, offsets,
         (fr_on_start, fr_on_end), (fr_off_start, fr_off_end), dt,
-        groups=groups, sigma_frames=sigma_frames)
+        groups=groups, sigma_frames=sigma_frames, keep=trial_keep)
 
-    # no tuning curve if too few touches
+    # no tuning curve if too few touches.  n_used is per cell now, so a group
+    # can be drawn for one cell and dropped for another
     enough = n_used >= min_events_per_group
     for g_idx, g_id in enumerate(group_ids):
-        if not enough[g_idx]:
+        if not np.any(enough[:, g_idx]):
             print(f'  excluding {legend_names[int(g_id)]} from the tuning '
-                  f'curves ({int(n_used[g_idx])} usable touches, need '
-                  f'{min_events_per_group})')
+                  f'curves ({int(n_used[:, g_idx].max())} usable touches at '
+                  f'best, need {min_events_per_group})')
 
-    if skip_too_few_events and not np.all(enough):
+    if skip_too_few_events and not np.all(enough.any(axis=0)):
         print(f'  skipping {session_id}: a group has < {min_events_per_group} '
               'touches')
         continue
 
-    ''' Raster rows: subsample, then order '''
     raster_seed = zlib.crc32(f'{bird}_{session_id}_beak_flap'.encode()) & 0xffffffff
-    raster_rng = np.random.default_rng(raster_seed)
-    r_onsets, r_offsets, r_groups, _, n_total_shown = subsample_for_raster(
-        onsets, offsets, groups,
-        max_per_group=max_events_per_group, rng=raster_rng)
-    n_events = r_onsets.shape[0]
-    for g_id, n_full in n_total_shown.items():
-        if n_full > max_events_per_group:
-            print(f'  {legend_names[int(g_id)]}: showing '
-                  f'{max_events_per_group}/{n_full} touches in the raster')
-
-    # raster order: group block first, then duration within block
-    if sort_by_duration:
-        order, block_edges = sort_events_by_duration(r_onsets, r_offsets, r_groups)
-    else:
-        order, block_edges = sort_events_by_time_group(r_onsets, r_offsets, r_groups)
-
-    align_on = r_onsets[order]
-    align_off = r_offsets[order]
-    groups_sorted = r_groups[order]
-
-    # the other end of each touch, marked in the raster.  Touches running past
-    # the window get no tick rather than one pinned to the edge, which would
-    # read as a real boundary there
-    durations_s = (align_off - align_on) * dt
-    offset_ticks = np.where(durations_s <= raster_t_pts[-1], durations_s, np.nan)
-    onset_ticks = np.where(durations_s <= raster_t_pts[-1], -durations_s, np.nan)
-
-    ''' Per-touch amplitudes, ordered so row i here is row i of the raster '''
-    raster_amp = None
-    if amp_data is not None and n_events:
-        raster_amp = np.array([
-            trial_amplitudes(amp_data[c][0], amp_data[c][1],
-                             align_on, fr_halfwidth_raster,
-                             min_spikes=amp_min_spikes)[0]
-            for c in range(n_cells)])
 
     ''' Plot '''
     # row 0 tuning curves | row 1 rasters
@@ -639,12 +629,49 @@ for session_id in behavior_sessions:
         # only groups that actually get drawn contribute to the limit
         psth_for_limit = []
         for g_idx in range(group_ids.shape[0]):
-            if enough[g_idx]:
+            if enough[c_idx, g_idx]:
                 psth_for_limit.append(on_psth[c_idx, g_idx])
                 psth_for_limit.append(off_psth[c_idx, g_idx])
         # every group underpowered: nothing to scale to, fall back to baseline
         max_fr = (shared_ylim(*psth_for_limit) if psth_for_limit
                   else max(float(avg_fr_session[c_idx]), 1.0))
+
+        # ── Raster rows: this cell's selected touches, then subsample ──
+        # per cell because the drift cut is; the seed is not, so with
+        # subsample_drift off every cell shows the same touches as before
+        sel = slice(None) if trial_keep is None else trial_keep[c_idx]
+        r_onsets, r_offsets, r_groups, _, _ = subsample_for_raster(
+            onsets[sel], offsets[sel], groups[sel],
+            max_per_group=max_events_per_group,
+            rng=np.random.default_rng(raster_seed))
+
+        # raster order: group block first, then duration within block
+        if sort_by_duration:
+            order, block_edges = sort_events_by_duration(
+                r_onsets, r_offsets, r_groups)
+        else:
+            order, block_edges = sort_events_by_time_group(
+                r_onsets, r_offsets, r_groups)
+
+        align_on = r_onsets[order]
+        align_off = r_offsets[order]
+        groups_sorted = r_groups[order]
+        n_events = align_on.shape[0]
+        n_selected = int(np.asarray(onsets[sel]).shape[0])
+
+        # the other end of each touch, marked in the raster.  Touches running
+        # past the window get no tick rather than one pinned to the edge,
+        # which would read as a real boundary there
+        durations_s = (align_off - align_on) * dt
+        offset_ticks = np.where(durations_s <= raster_t_pts[-1], durations_s, np.nan)
+        onset_ticks = np.where(durations_s <= raster_t_pts[-1], -durations_s, np.nan)
+
+        # per-touch amplitudes for THIS cell, in raster row order
+        raster_amp = None
+        if amp_data is not None and n_events:
+            raster_amp = trial_amplitudes(
+                amp_data[c_idx][0], amp_data[c_idx][1], align_on,
+                fr_halfwidth_raster, min_spikes=amp_min_spikes)[0]
 
         rng = np.random.default_rng(int(cell_id) * 7919)
 
@@ -688,16 +715,16 @@ for session_id in behavior_sessions:
 
         # plain ylabel for the event type + count, parked outside the coloured
         # group labels
-        ax[1, 0].set_ylabel(f'beak/flap touches (n={n_events_true})',
+        ax[1, 0].set_ylabel(f'beak/flap touches (n={n_selected})',
                             fontsize=axis_label, labelpad=ylabel_pad)
 
         # ── Amplitude panel ───────────────────────────────────────────
         # same rows, same colours and dividers as the rasters beside it
         if raster_amp is not None:
-            finite = raster_amp[c_idx][np.isfinite(raster_amp[c_idx])]
+            finite = raster_amp[np.isfinite(raster_amp)]
             amp_xmax = (max(np.ceil(float(finite.max()) * 10) / 10, 0.5)
                         if finite.size else None)
-            plot_amp_panel(ax[1, 2], raster_amp[c_idx],
+            plot_amp_panel(ax[1, 2], raster_amp,
                            groups_sorted=groups_sorted,
                            block_edges=block_edges,
                            colors=touch_colors, divider_lw=divider_lw,
@@ -712,14 +739,16 @@ for session_id in behavior_sessions:
         # ── Tuning curves, one trace per group ────────────────────────
         drawn = []
         for g_idx, g_id in enumerate(group_ids):
-            if not enough[g_idx]:
+            if not enough[c_idx, g_idx]:
                 continue
             g_id = int(g_id)
-            ax[0, 0].plot(timepoints_on, on_psth[c_idx, g_idx],
-                          lw=psth_lw, color=touch_colors[g_id])
-            ax[0, 1].plot(timepoints_off, off_psth[c_idx, g_idx],
-                          lw=psth_lw, color=touch_colors[g_id])
-            drawn.append((g_id, int(n_used[g_idx])))
+            plot_psth_trace(ax[0, 0], timepoints_on, on_psth[c_idx, g_idx], dt,
+                            touch_colors[g_id], sigma_frames=sigma_frames,
+                            lw=psth_lw)
+            plot_psth_trace(ax[0, 1], timepoints_off, off_psth[c_idx, g_idx], dt,
+                            touch_colors[g_id], sigma_frames=sigma_frames,
+                            lw=psth_lw)
+            drawn.append((g_id, int(n_used[c_idx, g_idx])))
 
         for col, t_pts in [(0, timepoints_on), (1, timepoints_off)]:
             ax[0, col].vlines(0, 0, max_fr,

@@ -9,6 +9,7 @@ from format_waveform_data import cluster_ids_for_session
 from cell_filters import filter_cells, apply_cell_filter
 from event_psth import (window_frames, build_raster, raster_scatter,
                         sort_events_by_duration, event_psth_on_off,
+                        plot_psth_trace,
                         shared_ylim, raster_marker_size)
 from format_behavior_data import (load_behavior_data, get_feeder_ints,
                                   get_feeder_periods, classify_feeder_ints,
@@ -17,6 +18,7 @@ from format_behavior_data import (load_behavior_data, get_feeder_ints,
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 from matplotlib.lines import Line2D
+from spike_amplitudes import load_spike_amplitudes, select_trials_by_drift
 
 '''
 Plot feeder-visit-aligned activity for single cells, split by feeder identity.
@@ -90,6 +92,16 @@ for session_id in session_list:
     preprocessed_data = data_dict[bird][session_id]['preprocessed_data']
     if ('behavior' in preprocessed_data) & ('ephys' in preprocessed_data):
         behavior_sessions.append(session_id)
+
+''' Per-cell trial selection (unit drift) '''
+# Drop visits where the unit looks unhealthy BEFORE the tuning curves are
+# computed, so each cell's curves and its raster are built from the same set
+# of visits.  thresh_t_window should be much wider than the tuning-curve
+# window: it asks how the unit is doing around the visit, not how it responds.
+subsample_drift = False
+subsample_metric = 'firing rate'   # 'firing rate' | 'amplitude'
+subsample_thresh = 0.5             # keep visits >= this x the session average
+thresh_t_window = 60.0             # seconds centred on the visit
 
 ''' Plotting params '''
 # tuning-curve windows (seconds) relative to visit arrival / departure
@@ -180,7 +192,15 @@ for session_id in behavior_sessions:
     if n_partial:
         print(f'  excluding {n_partial} visits that spanned an open/close transition')
 
-    ''' Pre-compute per-row event ordering and tuning curves '''
+    ''' KS spike amplitudes, only if the drift cut needs them '''
+    amp_data = None
+    if subsample_drift and subsample_metric == 'amplitude':
+        session_data = data_dict[bird][session_id]
+        ks_dir = f"{bird}_{session_data['ephys_id']}/{session_data['ks_folder']}/"
+        amp_data = load_spike_amplitudes(session_dir, data_dir, ks_dir,
+                                         cell_ids, n_frames, fps=fps)
+
+    ''' Pre-compute per-row tuning curves '''
     rows = []
     for status, label in [(1, 'open feeder visits'), (0, 'closed feeder visits')]:
         sel = feeder_status == status
@@ -191,34 +211,41 @@ for session_id in behavior_sessions:
 
         if n_events == 0:
             rows.append(dict(label=label, n_events=0, group_ids=np.asarray([]),
-                             enough=np.asarray([], dtype=bool)))
+                             enough=np.zeros((n_cells, 0), dtype=bool)))
             print(f'  no {label}')
             continue
 
-        # raster order: feeder block first, then duration within feeder
-        order, block_edges = sort_events_by_duration(onsets, offsets, groups)
-        durations = (offsets - onsets)[order]
-        onset_ticks = np.clip(-durations * dt, raster_t_pts[0], 0)
+        # per-cell visit selection, before anything is averaged
+        trial_keep = None
+        if subsample_drift:
+            trial_keep = select_trials_by_drift(spike_fr, onsets, dt,
+                                                subsample_metric,
+                                                subsample_thresh,
+                                                thresh_t_window,
+                                                amp_data=amp_data)
+            print(f'  {subsample_metric} cut keeps '
+                  f'{trial_keep.sum(axis=1).min()}-'
+                  f'{trial_keep.sum(axis=1).max()} of {n_events} '
+                  f'{label} per cell')
 
         on_psth, off_psth, group_ids, n_used = event_psth_on_off(
             spike_fr, onsets, offsets,
             (fr_on_start, fr_on_end), (fr_off_start, fr_off_end), dt,
             groups=groups, sigma_frames=sigma_frames,
-            min_duration=min_visit_frames)
+            min_duration=min_visit_frames, keep=trial_keep)
 
+        # n_used is per cell now, so a feeder can be drawn for one cell and
+        # dropped for another
         enough = n_used >= min_visits_per_feeder
         for g_idx, g_id in enumerate(group_ids):
-            if not enough[g_idx]:
+            if not np.any(enough[:, g_idx]):
                 print(f'  excluding feeder {g_id} from the {label} tuning '
-                      f'curves ({int(n_used[g_idx])} usable visits, '
-                      f'need {min_visits_per_feeder})')
+                      f'curves ({int(n_used[:, g_idx].max())} usable visits '
+                      f'at best, need {min_visits_per_feeder})')
 
         rows.append(dict(
             label=label, n_events=n_events,
-            align_frames=offsets[order],
-            groups_sorted=groups[order],
-            onset_ticks=onset_ticks,
-            block_edges=block_edges,
+            onsets=onsets, offsets=offsets, groups=groups, keep=trial_keep,
             on_psth=on_psth, off_psth=off_psth,
             group_ids=group_ids, n_used=n_used, enough=enough,
         ))
@@ -240,17 +267,19 @@ for session_id in behavior_sessions:
             modulated = False
             active = False
             for r in score_rows:
-                if r['n_events'] == 0 or not np.any(r['enough']):
+                if r['n_events'] == 0 or not np.any(r['enough'][c_idx]):
                     continue
                 traces = np.concatenate(
-                    [r['on_psth'][c_idx, r['enough']].ravel(),
-                     r['off_psth'][c_idx, r['enough']].ravel()])
+                    [r['on_psth'][c_idx, r['enough'][c_idx]].ravel(),
+                     r['off_psth'][c_idx, r['enough'][c_idx]].ravel()])
                 if (traces >= up_thresh).any() or (traces <= down_thresh).any():
                     modulated = True
-                # enough spikes in the raster window to trust the curve
-                raster = build_raster(spike_fr[c_idx], r['align_frames'],
+                # enough spikes in the raster window to trust the curve, over
+                # the visits this cell actually uses
+                sel = slice(None) if r['keep'] is None else r['keep'][c_idx]
+                raster = build_raster(spike_fr[c_idx], r['offsets'][sel],
                                       fr_halfwidth_raster)
-                if raster.sum() >= min_spikes_per_visit * r['n_events']:
+                if raster.sum() >= min_spikes_per_visit * max(raster.shape[0], 1):
                     active = True
             if modulated and active:
                 cells_to_plot.append(c_idx)
@@ -297,7 +326,7 @@ for session_id in behavior_sessions:
             if r['n_events'] == 0:
                 continue
             for g_idx in range(r['group_ids'].shape[0]):
-                if r['enough'][g_idx]:
+                if r['enough'][c_idx, g_idx]:
                     psth_for_limit.append(r['on_psth'][c_idx, g_idx])
                     psth_for_limit.append(r['off_psth'][c_idx, g_idx])
         max_fr = shared_ylim(*psth_for_limit)
@@ -305,16 +334,29 @@ for session_id in behavior_sessions:
         rng = np.random.default_rng(int(cell_id) * 7919)
 
         for row, r in enumerate(rows):
-            n_events = r['n_events']
+            n_events = 0
+            if r['n_events']:
+                # ── Raster rows: this cell's selected visits ───────────
+                # per cell because the drift cut is; identical for every
+                # cell when subsample_drift is off
+                sel = slice(None) if r['keep'] is None else r['keep'][c_idx]
+                c_ons, c_offs = r['onsets'][sel], r['offsets'][sel]
+                c_groups = r['groups'][sel]
+                order, block_edges = sort_events_by_duration(
+                    c_ons, c_offs, c_groups)
+                groups_sorted = c_groups[order]
+                onset_ticks = np.clip(-(c_offs - c_ons)[order] * dt,
+                                      raster_t_pts[0], 0)
+                n_events = c_ons.shape[0]
 
             if n_events:
                 # ── Raster, one colour block per feeder ────────────────
-                raster = build_raster(spike_fr[c_idx], r['align_frames'],
+                raster = build_raster(spike_fr[c_idx], c_offs[order],
                                       fr_halfwidth_raster)
                 spk_s = raster_marker_size(ax[row, 0], f, n_events)
                 spk_t, spk_row = raster_scatter(raster, raster_t_pts, dt, rng=rng)
-                spk_groups = r['groups_sorted'][spk_row.astype(int)]
-                for g_id in np.unique(r['groups_sorted']):
+                spk_groups = groups_sorted[spk_row.astype(int)]
+                for g_id in np.unique(groups_sorted):
                     sel = spk_groups == g_id
                     ax[row, 0].scatter(spk_t[sel], spk_row[sel],
                                        color=feeder_colors[g_id - 1],
@@ -322,23 +364,27 @@ for session_id in behavior_sessions:
 
                 ax[row, 0].vlines(0, -0.5, n_events - 0.5,
                                   colors='k', linestyles='dashed', lw=event_lw)
-                ax[row, 0].scatter(r['onset_ticks'], np.arange(n_events),
+                ax[row, 0].scatter(onset_ticks, np.arange(n_events),
                                    color='k', marker='|', lw=event_lw,
                                    s=spk_s / 2, zorder=2)
-                for edge in r['block_edges']:
+                for edge in block_edges:
                     ax[row, 0].axhline(edge - 0.5, color='xkcd:gray',
                                        lw=divider_lw, zorder=3)
 
                 # ── Tuning curves, one trace per feeder ────────────────
                 drawn = []
                 for g_idx, g_id in enumerate(r['group_ids']):
-                    if not r['enough'][g_idx]:
+                    if not r['enough'][c_idx, g_idx]:
                         continue
-                    ax[row, 2].plot(timepoints_on, r['on_psth'][c_idx, g_idx],
-                                    lw=psth_lw, color=feeder_colors[g_id - 1])
-                    ax[row, 3].plot(timepoints_off, r['off_psth'][c_idx, g_idx],
-                                    lw=psth_lw, color=feeder_colors[g_id - 1])
-                    drawn.append((g_id, int(r['n_used'][g_idx])))
+                    plot_psth_trace(ax[row, 2], timepoints_on,
+                                    r['on_psth'][c_idx, g_idx], dt,
+                                    feeder_colors[g_id - 1],
+                                    sigma_frames=sigma_frames, lw=psth_lw)
+                    plot_psth_trace(ax[row, 3], timepoints_off,
+                                    r['off_psth'][c_idx, g_idx], dt,
+                                    feeder_colors[g_id - 1],
+                                    sigma_frames=sigma_frames, lw=psth_lw)
+                    drawn.append((g_id, int(r['n_used'][c_idx, g_idx])))
 
                 # if drawn:
                 #     handles = [Line2D([0], [0], color=feeder_colors[g_id - 1],

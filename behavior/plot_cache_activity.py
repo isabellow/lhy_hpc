@@ -9,9 +9,10 @@ from format_waveform_data import cluster_ids_for_session
 from cell_filters import filter_cells, apply_cell_filter
 from event_psth import (window_frames, build_raster, raster_scatter,
                         sort_events_by_duration, event_psth_on_off,
-                        shared_ylim, raster_marker_size)
+                        shared_ylim, raster_marker_size, plot_psth_trace)
 from format_behavior_data import (load_behavior_data, get_cache_ints,
                                   get_retrieve_ints)
+from spike_amplitudes import load_spike_amplitudes, select_trials_by_drift
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
@@ -41,7 +42,7 @@ session_info_file = f"{root_dir}good_sessions.xlsx"
 bird = 'LMN86'  # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
-session_list = ['260831']
+session_list = ['260828']
 fps = 50  # Hz
 dt = 1 / fps
 
@@ -57,6 +58,15 @@ CELL_FILTERS = dict(
 #   'cache_modulated' — only cells the shuffle test flagged (barcode_dict)
 #   'all'             — every cell that survives CELL_FILTERS
 CELL_SELECTION = 'all'
+
+''' Per-cell trial selection (unit drift) '''
+# Drop events where the unit looks unhealthy BEFORE the tuning curves are
+# computed, so each cell gets its own set of events, and its raster shows
+# the events its curves were actually built from.
+subsample_drift = False
+subsample_metric = 'firing rate'   # 'firing rate' | 'amplitude'
+subsample_thresh = 0.5             # keep events >= this x the session average
+thresh_t_window = 60.0             # seconds centred on the event
 
 # collect sessions with pose tracking & ephys
 behavior_sessions = []
@@ -158,29 +168,39 @@ for session_id in behavior_sessions:
         print('  skipping')
         continue
 
-    ''' Event ordering for the rasters (sorted by duration) '''
-    cache_order, _ = sort_events_by_duration(cache_onsets, cache_offsets)
-    ret_order, _ = sort_events_by_duration(retrieve_onsets, retrieve_offsets)
-
-    # onset tick position for each row, relative to the offset at t=0
-    cache_dur = (cache_offsets - cache_onsets)[cache_order]
-    ret_dur = (retrieve_offsets - retrieve_onsets)[ret_order]
-    cache_ons = np.clip(-cache_dur * dt, raster_t_pts[0], 0)
-    ret_ons = np.clip(-ret_dur * dt, raster_t_pts[0], 0)
+    ''' Per-cell event selection, before anything is averaged '''
+    cache_keep = ret_keep = None
+    if subsample_drift:
+        amp_data = None
+        if subsample_metric == 'amplitude':
+            session_data = data_dict[bird][session_id]
+            ks_dir = f"{bird}_{session_data['ephys_id']}/{session_data['ks_folder']}/"
+            amp_data = load_spike_amplitudes(session_dir, data_dir, ks_dir,
+                                             cell_ids, n_frames, fps=fps)
+        cache_keep, ret_keep = [
+            select_trials_by_drift(spike_fr, ons, dt, subsample_metric,
+                                   subsample_thresh, thresh_t_window,
+                                   amp_data=amp_data)
+            for ons in (cache_onsets, retrieve_onsets)]
+        print(f'  {subsample_metric} cut keeps '
+              f'{cache_keep.sum(axis=1).min()}-{cache_keep.sum(axis=1).max()} '
+              f'of {n_cache} caches and '
+              f'{ret_keep.sum(axis=1).min()}-{ret_keep.sum(axis=1).max()} '
+              f'of {n_ret} retrievals per cell')
 
     ''' Onset- and offset-aligned tuning curves '''
     cache_on_psth, cache_off_psth, _, n_cache_used = event_psth_on_off(
         spike_fr, cache_onsets, cache_offsets,
         (fr_on_start, fr_on_end), (fr_off_start, fr_off_end), dt,
-        sigma_frames=sigma_frames)
+        sigma_frames=sigma_frames, keep=cache_keep)
 
     ret_on_psth, ret_off_psth, _, n_ret_used = event_psth_on_off(
         spike_fr, retrieve_onsets, retrieve_offsets,
         (fr_on_start, fr_on_end), (fr_off_start, fr_off_end), dt,
-        sigma_frames=sigma_frames)
+        sigma_frames=sigma_frames, keep=ret_keep)
 
-    print(f'  tuning curves from {int(n_cache_used[0])} caches and '
-          f'{int(n_ret_used[0])} retrievals (complete windows only)')
+    print(f'  tuning curves from up to {int(n_cache_used[:, 0].max())} caches '
+          f'and {int(n_ret_used[:, 0].max())} retrievals (complete windows only)')
 
     ''' Plot '''
     # create the figure once and clear it between cells
@@ -218,11 +238,24 @@ for session_id in behavior_sessions:
         # deterministic within-frame jitter, so a cell looks the same each run
         rng = np.random.default_rng(int(cell_id) * 7919)
 
-        # ── Rasters ────────────────────────────────────────────────────
-        raster_specs = [
-            (0, cache_offsets[cache_order], cache_ons, cache_color, n_cache),
-            (1, retrieve_offsets[ret_order], ret_ons, ret_color, n_ret),
-        ]
+        # ── Raster rows: this cell's selected events, ordered by duration ─
+        # per cell because the drift cut is; identical for every cell when
+        # subsample_drift is off
+        raster_specs = []
+        n_rows = {}
+        for row, (ons, offs, k, color) in enumerate(
+                [(cache_onsets, cache_offsets, cache_keep, cache_color),
+                 (retrieve_onsets, retrieve_offsets, ret_keep, ret_color)]):
+            sel = slice(None) if k is None else k[c_idx]
+            c_ons, c_offs = ons[sel], offs[sel]
+            order, _ = sort_events_by_duration(c_ons, c_offs)
+            # onset tick position for each row, relative to the offset at t=0
+            onset_ticks = np.clip(-(c_offs - c_ons)[order] * dt,
+                                  raster_t_pts[0], 0)
+            n_rows[row] = c_ons.shape[0]
+            raster_specs.append((row, c_offs[order], onset_ticks, color,
+                                 n_rows[row]))
+
         for row, align_frames, onset_ticks, color, n_events in raster_specs:
             if n_events == 0:
                 ax[row, 0].set_xlim(raster_t_pts[0], raster_t_pts[-1])
@@ -246,8 +279,10 @@ for session_id in behavior_sessions:
             (1, ret_on_psth[c_idx, 0], ret_off_psth[c_idx, 0], ret_color),
         ]
         for row, on_trace, off_trace, color in psth_specs:
-            ax[row, 2].plot(timepoints_on, on_trace, lw=psth_lw, color=color)
-            ax[row, 3].plot(timepoints_off, off_trace, lw=psth_lw, color=color)
+            plot_psth_trace(ax[row, 2], timepoints_on, on_trace, dt, color,
+                            sigma_frames=sigma_frames, lw=psth_lw)
+            plot_psth_trace(ax[row, 3], timepoints_off, off_trace, dt, color,
+                            sigma_frames=sigma_frames, lw=psth_lw)
             for col, t_pts in [(2, timepoints_on), (3, timepoints_off)]:
                 ax[row, col].vlines(0, 0, max_fr,
                                     colors='k', linestyles='dashed', lw=event_lw)
@@ -257,7 +292,7 @@ for session_id in behavior_sessions:
 
         # ── Limits & ticks ─────────────────────────────────────────────
         raster_ticks = np.arange(-event_window / 2, event_window / 2 + 0.5, time_int)
-        for row, n_events in [(0, n_cache), (1, n_ret)]:
+        for row, n_events in [(0, n_rows[0]), (1, n_rows[1])]:
             ax[row, 0].set_xlim(raster_t_pts[0], raster_t_pts[-1])
             ax[row, 0].set_ylim(-0.5, max(n_events, 1) - 0.5)
             ax[row, 0].set_xticks(raster_ticks)
@@ -272,8 +307,8 @@ for session_id in behavior_sessions:
             ax[row, 3].set_yticks([])
 
         # ── Axis labels ────────────────────────────────────────────────
-        ax[0, 0].set_ylabel(f'caches (n={n_cache})', fontsize=axis_label)
-        ax[1, 0].set_ylabel(f'retrievals (n={n_ret})', fontsize=axis_label)
+        ax[0, 0].set_ylabel(f'caches (n={n_rows[0]})', fontsize=axis_label)
+        ax[1, 0].set_ylabel(f'retrievals (n={n_rows[1]})', fontsize=axis_label)
         for row in range(2):
             ax[row, 0].set_xlabel('time from event offset (s)', fontsize=axis_label)
             ax[row, 2].set_xlabel('time from onset (s)', fontsize=axis_label)
