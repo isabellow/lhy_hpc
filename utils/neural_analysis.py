@@ -111,7 +111,7 @@ def tuning_curve_2d(X, Y, dt, b_lims, b):
     return firing_rate, centers
 
 
-def align_spikes_behavior(session_dir, fps=50, only_good=True):
+def align_spikes_behavior(session_dir, fps=50, only_good=True, keep_cells=None):
     '''
     Given neural spiking data and behavior video frame rate, bin spikes by video frames.
 
@@ -119,6 +119,16 @@ def align_spikes_behavior(session_dir, fps=50, only_good=True):
         video frame rate in Hz
     only_good : bool
         if True, only keeps cells labeled "good" in the phy file
+    keep_cells : bool array, shape (n_cells,), optional
+        mask over the good clusters, in cluster_group.tsv order, marking the
+        cells to save. Used to drop cells on excluded probe shanks so they
+        never reach any downstream analysis. Requires only_good=True.
+
+    Saves
+    -----
+    aligned_spikes.npy      spikes per video frame, shape (n_kept, n_frames)
+    aligned_spikes_ids.npy  KS cluster ID of each saved row, so a file written
+                            for a different set of cells can be detected
     '''
     '''Session params '''
     if len(session_dir.split('/')[-1]) == 0:
@@ -129,6 +139,7 @@ def align_spikes_behavior(session_dir, fps=50, only_good=True):
 
     ''' File params '''
     save_file = "aligned_spikes.npy"
+    id_file = "aligned_spikes_ids.npy"
     video_data_dir = f"{session_dir}/behavior_data/"
     for folder in sorted(os.listdir(session_dir)):
         if bird_session in folder:
@@ -180,4 +191,20 @@ def align_spikes_behavior(session_dir, fps=50, only_good=True):
         spike_fr[i], _ = np.histogram(spk_times, frame_samples)
 
     ''' Save the data '''
+    # drop cells on excluded shanks before saving, so every downstream script
+    # that loads aligned_spikes.npy sees the same set of cells as the data dict
+    if keep_cells is not None:
+        if not only_good:
+            raise ValueError("keep_cells requires only_good=True: the mask is "
+                             "defined over the good clusters")
+        keep_cells = np.asarray(keep_cells).astype(bool)
+        if keep_cells.shape[0] != n_cells:
+            raise ValueError(f"keep_cells has {keep_cells.shape[0]} entries but "
+                             f"{session_dir} has {n_cells} good clusters")
+        spike_fr = spike_fr[keep_cells]
+        good_clusters = good_clusters[keep_cells]
+
     np.save(f"{video_data_dir}/{save_file}", spike_fr)
+    np.save(f"{video_data_dir}/{id_file}", np.asarray(good_clusters).astype(int))
+
+    return np.asarray(good_clusters).astype(int)

@@ -12,9 +12,23 @@ Order of operations:
         list of 'ephys', 'behavior', 'stim'
         if that data exists for this session
 
+1b. get_probe_coords_lhy.flag_excluded_cells()
+    -> assigns every sorted cell to a shank and flags the cells on shanks
+       marked 'exclude' in the Anatomy sheet. Runs before everything else so
+       that every later step can mask the same cells out.
+    -> needs: 'all_sessions', 'preprocessed_data', 'ephys_id', 'ks_folder' (step 1)
+    -> needs: good_sessions.xlsx (Anatomy sheet, 'bird ID' + 'exclude' columns)
+
+    data_dict[bird]['n_shanks'], ['shank_ids'], ['exclude_shank']
+    data_dict[bird][session]['keep_cells'], ['cluster_ids'], ['cell_shank_idx']
+
+    Every cell-level field created after this point is masked by 'keep_cells'
+    when it is created, including aligned_spikes.npy, so downstream scripts
+    that load that file directly see the same cells as the data dict.
+
 2. collect_waveform_data()
     -> ported from neural/save_all_wf_data.py
-    -> needs: 'preprocessed_data', 'all_sessions' (step 1)
+    -> needs: 'preprocessed_data', 'all_sessions' (step 1), 'keep_cells' (step 1b)
     
     data_dict[bird][session]['ephys_id'], ['waveform_props'], ['excitatory_idx'], ['inhibitory_idx']
     data_dict[bird][session]['ephys_id']['ks_path'] # todo
@@ -22,17 +36,22 @@ Order of operations:
 
 3. get_probe_coords.get_anatomy_info() + save_cell_positions()
     -> existing functions, anatomy/get_probe_coords.py
-    -> needs: 'all_sessions', 'preprocessed_data' (step 1)
+    -> needs: 'all_sessions', 'preprocessed_data' (step 1), 'keep_cells' (step 1b)
     -> needs: good_sessions.xlsx spreadsheet (session depths + probe insertion coords)
     
     data_dict[bird]['insert_coords'],
-    data_dict[bird][session]['depth'], ['channel_pos'], ['cell_pos'], ['shank_A_idx']
+    data_dict[bird][session]['depth'], ['channel_pos'], ['channel_shank_idx'],
+    ['cell_pos'], ['shank_idx']
 
 4. align_behavior_spikes()
     -> ported from behavior/save_aligned_spikes.py
-    -> needs 'preprocessed_data'  (step 1)
+    -> needs 'preprocessed_data'  (step 1), 'keep_cells' + 'cluster_ids' (step 1b)
 
-    writes aligned_spikes.npy file per session (does not modify the dict itself)
+    writes aligned_spikes.npy per session (does not modify the dict itself),
+    masked to the kept cells, plus aligned_spikes_ids.npy holding the KS
+    cluster ID of each saved row. Sessions are skipped when the saved IDs
+    already match the dict, so this is cheap to re-run and still picks up
+    new sessions; a file that no longer matches is always rebuilt.
 
 5. collect_stim_data()
     -> ported from stim/save_all_stim_data.py
@@ -244,8 +263,16 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
                 width[wf_idx] = waveform_analysis.calc_spike_width_polarity(mean_waveforms[wf_idx, best_ch])
                 asymm[wf_idx] = waveform_analysis.calc_amp_assym(mean_waveforms[wf_idx, best_ch])
 
+            # drop cells on excluded shanks (mask from flag_excluded_cells).
+            # waveform_props is computed fresh here, so it is always full
+            # length at this point and safe to mask on every run.
             waveform_props = np.row_stack([asymm, width, log_fr])
-            data_dict[bird][session_id]['waveform_props'] = waveform_props
+            keep = get_probe_coords_lhy.get_keep_mask(data_dict, bird, session_id, n_cells)
+            if keep is None:
+                print(f'  skipping {bird}_{session_id}: keep_cells is stale '
+                      f'(re-run flag_excluded_cells with overwrite=True)')
+                continue
+            data_dict[bird][session_id]['waveform_props'] = waveform_props[:, keep]
 
     # re-cluster excitatory/inhibitory across ALL sessions any time new data is added
     all_waveform_props = []
@@ -261,7 +288,16 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
                 session_index = np.append(session_index, np.full(n_cells, sess_idx))
                 session_keys.append((bird, session_id))
                 sess_idx += 1
-        data_dict[bird]['all_waveform_props'] = all_waveform_props
+
+    # per-bird concatenation across that bird's sessions
+    # (this was previously assigned outside the bird loop, so every bird's
+    #  props landed on whichever bird happened to be last)
+    for bird in bird_ids:
+        bird_props = [data_dict[bird][s]['waveform_props']
+                      for s in data_dict[bird]['all_sessions']
+                      if 'waveform_props' in data_dict[bird][s]]
+        data_dict[bird]['all_waveform_props'] = (np.column_stack(bird_props)
+                                                 if bird_props else np.asarray([]))
 
     if len(all_waveform_props) > 0:
         asymm, width, log_fr = all_waveform_props[0], all_waveform_props[1], all_waveform_props[2]
@@ -276,16 +312,95 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
 # Step 4: behavior-aligned spikes per session (ported from behavior/save_aligned_spikes.py)
 # ---------------------------------------------------------------------------
 def align_behavior_spikes(data_dict, bird_ids, root_dir, overwrite=False):
+    '''
+    Write aligned_spikes.npy per session, masked to the kept cells.
+
+    Alignment is slow, so this skips sessions whose file is already on disk
+    and already matches the current set of kept cells. New sessions are
+    always built, so overwrite=False still picks up newly added sessions.
+
+    A session is rebuilt when:
+    - overwrite=True
+    - aligned_spikes.npy doesn't exist yet (new session)
+    - the cluster ID sidecar is missing (file predates the masking, so it
+      still holds every sorted cell)
+    - the saved cluster IDs no longer match the dict (excluded shanks changed,
+      or the session was re-sorted)
+
+    The last two mean a stale file can't survive a run, whatever overwrite is.
+    '''
     for bird in bird_ids:
         print(f'\naligning spikes to behavior for {bird}')
         for session_id in data_dict[bird]['all_sessions']:
-            preprocessed = data_dict[bird][session_id]['preprocessed_data']
-            if ('behavior' in preprocessed) and ('ephys' in preprocessed):
-                session_dir = f"{root_dir}{bird}/{bird}_{session_id}/"
-                if (not overwrite) and os.path.isfile(f"{session_dir}/aligned_spikes.npy"):
-                    continue
-                else:
-                    neural_analysis.align_spikes_behavior(session_dir)
+            session_data = data_dict[bird][session_id]
+            preprocessed = session_data['preprocessed_data']
+            if not (('behavior' in preprocessed) and ('ephys' in preprocessed)):
+                continue
+
+            session_dir = f"{root_dir}{bird}/{bird}_{session_id}/"
+            data_dir = f"{session_dir}behavior_data/"
+            spike_file = f"{data_dir}aligned_spikes.npy"
+            id_file = f"{data_dir}aligned_spikes_ids.npy"
+
+            keep_cells = session_data.get('keep_cells')
+            expected_ids = session_data.get('cluster_ids')
+
+            # decide whether this session needs (re)building
+            if overwrite:
+                reason = 'overwrite=True'
+            elif not os.path.isfile(spike_file):
+                reason = 'no aligned spikes yet'
+            elif expected_ids is None:
+                reason = None                      # nothing to check against
+            elif not os.path.isfile(id_file):
+                reason = 'file predates excluded-shank masking'
+            elif not np.array_equal(np.load(id_file), np.asarray(expected_ids).astype(int)):
+                reason = 'saved cells no longer match the dict'
+            else:
+                reason = None
+
+            if reason is None:
+                continue
+            print(f'  {session_id}: {reason}')
+            neural_analysis.align_spikes_behavior(session_dir, keep_cells=keep_cells)
+
+
+def load_aligned_spikes(data_dict, bird, session_id, data_dir):
+    '''
+    Load a session's behavior-aligned spikes.
+
+    The file on disk is already masked to the kept cells by
+    align_behavior_spikes, so nothing is masked here. The cluster ID sidecar
+    is checked against the dict so that a file written for a different set of
+    cells is caught rather than silently mis-paired with waveform_props.
+
+    Returns
+    -------
+    spike_frame : ndarray, shape (n_cells, n_frames), or None
+    reason : str or None
+        why the session should be skipped, when spike_frame is None
+    '''
+    spike_file = f'{data_dir}aligned_spikes.npy'
+    if not os.path.isfile(spike_file):
+        return None, 'no aligned_spikes.npy (run align_behavior_spikes first)'
+    spike_frame = np.load(spike_file)
+
+    expected_ids = data_dict[bird][session_id].get('cluster_ids')
+    if expected_ids is None:
+        return spike_frame, None        # back-compat: no mask was ever applied
+
+    id_file = f'{data_dir}aligned_spikes_ids.npy'
+    if not os.path.isfile(id_file):
+        return None, ('aligned_spikes.npy predates the excluded-shank masking '
+                      '-- re-run align_behavior_spikes with overwrite=True')
+    saved_ids = np.load(id_file)
+    if not np.array_equal(saved_ids, np.asarray(expected_ids).astype(int)):
+        return None, ('aligned_spikes.npy holds a different set of cells than the dict '
+                      '-- re-run align_behavior_spikes with overwrite=True')
+    if spike_frame.shape[0] != saved_ids.size:
+        return None, 'aligned_spikes.npy and its cluster ID sidecar disagree'
+    return spike_frame, None
+
 
 # ---------------------------------------------------------------------------
 # Step 5: stim / antidromic response data (ported from stim/save_all_stim_data.py)
@@ -364,16 +479,33 @@ def collect_stim_response_data(data_dict, bird_ids, root_dir, overwrite=False,
             all_sig_idx = all_sig_idx[unique_idx]
             print(f'{session_id} has {all_sig_cells.shape[0]} cells with significant collisions (p <= 0.01)')
 
+            # the collision files index the full (unmasked) cell list, so
+            # remap onto the kept cells and drop any that were excluded
+            keep = data_dict[bird][session_id].get('keep_cells')
+            if keep is not None and all_sig_cells.shape[0] > 0:
+                idx_map = np.full(keep.size, -1, dtype=int)
+                idx_map[keep] = np.arange(int(np.sum(keep)))
+                remapped = idx_map[all_sig_idx.astype(int)]
+                still_valid = remapped >= 0
+                if np.any(~still_valid):
+                    print(f'  {np.sum(~still_valid)} projection cell(s) were on an '
+                          f'excluded shank and have been dropped')
+                all_sig_cells = all_sig_cells[still_valid]
+                all_sig_idx = remapped[still_valid]
+
             data_dict[bird][session_id]['worm_ch_idx'] = worm_ch_idx
             if all_sig_cells.shape[0] > 0:
                 data_dict[bird][session_id]['proj_cell_IDs'] = all_sig_cells.astype(int)
                 data_dict[bird][session_id]['proj_cell_idx'] = all_sig_idx.astype(int)
 
     # nucleus depth estimates (requires 'channel_pos' from step 3)
+    # nucleus_dvs is (n_shanks, 2): [min DV, max DV] of the responsive span
+    # on each shank. Excluded shanks have NaN channel_pos, so they drop out.
     for bird in bird_ids:
         print(f'\napproximating projection nucleus location for {bird}')
         session_list = data_dict[bird]['all_sessions']
-        bird_nucleus_dvs = np.full((len(session_list), 2, 2), np.nan)
+        n_shanks = int(data_dict[bird].get('n_shanks', 1))
+        bird_nucleus_dvs = np.full((len(session_list), n_shanks, 2), np.nan)
         for i, session_id in enumerate(session_list):
             key = f'{bird}_{session_id}'
             if key not in stim_sessions or 'worm_ch_idx' not in data_dict[bird][session_id]:
@@ -386,41 +518,48 @@ def collect_stim_response_data(data_dict, bird_ids, root_dir, overwrite=False,
             n_channels = stim_idx.shape[0]
             ch_pos = data_dict[bird][session_id]['channel_pos']
 
-            shank_idx = n_channels // 2
+            # which shank each channel is on, from the anatomy step
+            ch_shank = data_dict[bird][session_id].get('channel_shank_idx')
+            if ch_shank is None:
+                # back-compat: assume equal, contiguous shanks in channel order
+                ch_shank = np.concatenate([np.full(len(part), s) for s, part
+                                           in enumerate(np.array_split(np.arange(n_channels),
+                                                                       n_shanks))])
+            ch_shank = np.asarray(ch_shank).astype(int)
+
+            # fill in non-responsive channels that sit between two responsive
+            # channels on the same shank
             stim_idx_adj = np.zeros(n_channels).astype(bool)
-            for ch in range(n_channels):
-                if stim_idx[ch]:
-                    stim_idx_adj[ch] = True
-                    continue
-                elif ch < shank_idx:
-                    dorsal_resp = np.any(stim_idx[:ch])
-                    ventral_resp = np.any(stim_idx[ch + 1:shank_idx])
-                else:
-                    dorsal_resp = np.any(stim_idx[shank_idx:ch])
-                    ventral_resp = np.any(stim_idx[ch + 1:])
-                if dorsal_resp and ventral_resp:
-                    stim_idx_adj[ch] = True
+            for s in range(n_shanks):
+                ch_on_shank = np.where(ch_shank == s)[0]
+                for j, ch in enumerate(ch_on_shank):
+                    if stim_idx[ch]:
+                        stim_idx_adj[ch] = True
+                        continue
+                    dorsal_resp = np.any(stim_idx[ch_on_shank[:j]])
+                    ventral_resp = np.any(stim_idx[ch_on_shank[j + 1:]])
+                    if dorsal_resp and ventral_resp:
+                        stim_idx_adj[ch] = True
             stim_idx = stim_idx_adj
 
-            shank_A_idx = np.zeros(n_channels).astype(bool)
-            shank_A_idx[:shank_idx] = True
-            shank_A_dv = ch_pos[stim_idx & shank_A_idx, -1]
-            shank_B_dv = ch_pos[stim_idx & ~shank_A_idx, -1]
-
-            nucleus_dvs = np.full((2, 2), np.nan)
-            if shank_A_dv.shape[0] > 0:
-                nucleus_dvs[0] = [np.min(shank_A_dv), np.max(shank_A_dv)]
-            if shank_B_dv.shape[0] > 0:
-                nucleus_dvs[1] = [np.min(shank_B_dv), np.max(shank_B_dv)]
+            nucleus_dvs = np.full((n_shanks, 2), np.nan)
+            for s in range(n_shanks):
+                shank_dv = ch_pos[stim_idx & (ch_shank == s), -1]
+                shank_dv = shank_dv[np.isfinite(shank_dv)]
+                if shank_dv.shape[0] > 0:
+                    nucleus_dvs[s] = [np.min(shank_dv), np.max(shank_dv)]
             bird_nucleus_dvs[i] = nucleus_dvs
 
             data_dict[bird][session_id]['stim_resp_idx_ch'] = stim_idx
             data_dict[bird][session_id]['nucleus_dvs'] = nucleus_dvs
 
-        nucleus_dvs_all = np.full((2, 2), np.nan)
+        nucleus_dvs_all = np.full((n_shanks, 2), np.nan)
         if not np.all(np.isnan(bird_nucleus_dvs)):
-            nucleus_dvs_all[0] = [np.nanmin(bird_nucleus_dvs[:, 0, 0]), np.nanmax(bird_nucleus_dvs[:, 0, 1])]
-            nucleus_dvs_all[1] = [np.nanmin(bird_nucleus_dvs[:, 1, 0]), np.nanmax(bird_nucleus_dvs[:, 1, 1])]
+            for s in range(n_shanks):
+                if np.all(np.isnan(bird_nucleus_dvs[:, s, :])):
+                    continue
+                nucleus_dvs_all[s] = [np.nanmin(bird_nucleus_dvs[:, s, 0]),
+                                      np.nanmax(bird_nucleus_dvs[:, s, 1])]
         data_dict[bird]['nucleus_dvs'] = nucleus_dvs_all
 
     return data_dict
@@ -460,9 +599,13 @@ def collect_population_vectors(data_dict, bird_ids, root_dir, arena_dir, arena_i
             session_dir = f"{root_dir}{bird}/{bird}_{session_id}/"
             data_dir = f"{session_dir}/behavior_data/"
 
-            # load spike times and get firing rate per cell
+            # load spike times and get firing rate per cell.
+            # the file is already masked to the kept cells
             dt = 1 / fps
-            spike_frame = np.load(f'{data_dir}aligned_spikes.npy')
+            spike_frame, reason = load_aligned_spikes(data_dict, bird, session_id, data_dir)
+            if spike_frame is None:
+                print(f'  skipping {bird}_{session_id}: {reason}')
+                continue
             n_cells, n_frames = spike_frame.shape
             inst_firing_rate = spike_frame / dt
 
@@ -581,8 +724,12 @@ def collect_cache_shuffle_activity(data_dict, bird_ids, root_dir, overwrite=Fals
             session_dir = f"{root_dir}{bird}/{bird}_{session_id}/"
             data_dir = f"{session_dir}/behavior_data/"
 
-            # load spike times and get firing rate per cell
-            spike_frame = np.load(f'{data_dir}aligned_spikes.npy')
+            # load spike times and get firing rate per cell.
+            # the file is already masked to the kept cells
+            spike_frame, reason = load_aligned_spikes(data_dict, bird, session_id, data_dir)
+            if spike_frame is None:
+                print(f'  skipping {bird}_{session_id}: {reason}')
+                continue
             n_cells, n_frames = spike_frame.shape
             waveform_props = data_dict[bird][session_id]['waveform_props']
             avg_firing_rate = 10 ** waveform_props[2]
@@ -679,14 +826,28 @@ def collect_cache_shuffle_activity(data_dict, bird_ids, root_dir, overwrite=Fals
 # Build or update the data dictionary
 # ---------------------------------------------------------------------------
 def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
-                                    get_stim_data=False, overwrite=False):
+                                    get_stim_data=False, overwrite=False,
+                                    drop_excluded_shanks=True):
     '''
     Full pipeline
 
     Pass new_bird_ids=['XYZ01', 'XYZ02'] to create the dict from scratch or register new birds.
     Call with new_bird_ids=None to just refresh session lists / pick up new sessions for existing birds.
+
+    drop_excluded_shanks : bool
+        default True drops every cell on a shank marked 'exclude' in the
+        Anatomy sheet, so those cells never reach any downstream analysis.
+        Set False to keep them; the shank assignment is still recorded either way.
+        Changing this flag invalidates all cached per-cell fields, so re-run
+        with overwrite=True after changing it.
     '''
     data_dict, bird_ids = get_or_create_data_dict(ROOT_DIR, DATA_FILE, new_bird_ids)
+
+    print("\n=== shank assignment / excluded shanks ===")
+    data_dict = get_probe_coords_lhy.flag_excluded_cells(
+        data_dict, SESSION_INFO_FILE, ROOT_DIR,
+        drop_excluded=drop_excluded_shanks, overwrite=overwrite)
+    np.save(DATA_FILE, data_dict)
 
     print("\n=== waveform properties ===")
     data_dict = collect_waveform_data(data_dict, bird_ids, ROOT_DIR, overwrite=overwrite)

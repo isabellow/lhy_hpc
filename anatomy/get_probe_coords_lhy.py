@@ -65,6 +65,34 @@ def get_channel_shank(probe_coords, n_shanks):
     return shank_idx.astype(int)
 
 
+def parse_per_shank(value, n_shanks, name='value'):
+    '''
+    Normalize a per-shank quantity to a float array of length n_shanks.
+
+    Accepts:
+    - a single number, broadcast to every shank (back-compatible with
+      sheets/dicts written before per-shank values were supported)
+    - a comma-separated string in shank order (A, B, ...), as typed into the
+      session or anatomy sheet, e.g. "5940, 6060"
+    - an array-like already of length n_shanks
+
+    Raises if the count is neither 1 nor n_shanks, so a mistyped sheet cell
+    fails loudly instead of silently broadcasting the wrong value.
+    '''
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.split(',') if p.strip()]
+        vals = np.asarray([float(p) for p in parts], dtype=float)
+    else:
+        vals = np.atleast_1d(np.asarray(value, dtype=float))
+
+    if vals.size == 1:
+        vals = np.full(n_shanks, vals.item(), dtype=float)
+    if vals.size != n_shanks:
+        raise ValueError(f"{name}: expected 1 or {n_shanks} values in shank order "
+                         f"(A, B, ...), got {vals.size} ({value!r})")
+    return vals
+
+
 '''
 Anatomical functions
 '''
@@ -220,9 +248,9 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
     insert_coords : ndarray, shape (n_shanks, 2)
         absolute [ML, AP] insertion point of each shank (um), as returned
         by convert_insert_coords
-    final_depth : float
-        experimentally measured final insertion depth (um),
-        measured along the probe axis
+    final_depth : float or ndarray, shape (n_shanks,)
+        experimentally measured final insertion depth (um) per shank,
+        measured along the probe axis. A scalar is broadcast to all shanks.
     head_angle : sequence of 2 floats
         [roll_deg, pitch_deg] measured during implant
         pitch_deg is the beak bar angle in degrees below horizontal.
@@ -242,6 +270,7 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
     '''
     # data params
     n_shanks = raw_tip_coords.shape[0]
+    final_depth = parse_per_shank(final_depth, n_shanks, name='final_depth')
     if exclude is None:
         exclude = np.zeros(n_shanks, dtype=bool)
     has_hist = ~np.isnan(raw_tip_coords[:, 0]) & ~np.isnan(raw_tip_coords[:, 1]) & ~exclude
@@ -267,7 +296,8 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
         if len(dv_missing) > 0:
             ml_off = insert_coords[dv_missing, 0] - abs_ml[dv_missing]
             ap_off = insert_coords[dv_missing, 1] - abs_ap[dv_missing]
-            abs_dv[dv_missing] = np.sqrt(np.clip(final_depth**2 - ml_off**2 - ap_off**2, 0, None))
+            abs_dv[dv_missing] = np.sqrt(np.clip(final_depth[dv_missing]**2
+                                                 - ml_off**2 - ap_off**2, 0, None))
 
     # for shanks without histology, estimate the tip coordinates
     missing = ~has_hist & ~exclude
@@ -288,9 +318,9 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
         u_ap, u_ml, u_dv = v_brain
 
         # step along the track from the entry point: tip = entry + travel * v
-        abs_ml[missing] = insert_coords[missing, 0] + final_depth * u_ml
-        abs_ap[missing] = insert_coords[missing, 1] + final_depth * u_ap
-        abs_dv[missing] = final_depth * u_dv
+        abs_ml[missing] = insert_coords[missing, 0] + final_depth[missing] * u_ml
+        abs_ap[missing] = insert_coords[missing, 1] + final_depth[missing] * u_ap
+        abs_dv[missing] = final_depth[missing] * u_dv
 
         # for birds with histology, check against estimates from intended coords
         if np.any(has_hist):
@@ -371,17 +401,20 @@ def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords, hist_ra
         absolute [ML, AP] of each shank's insertion point (um)
     tip_coords : nparray, shape (n_shanks, 3)
         absolute [ML, AP, DV] of each shank's (final/deepest) tip (um)
-    probe_depth : float
-        depth the probe was inserted on this session, measured along the probe
-        axis (see the note on final_depth in convert_tip_coords)
+    probe_depth : float or ndarray, shape (n_shanks,)
+        depth each shank was inserted on this session, measured along the probe
+        axis (see the note on final_depth in convert_tip_coords). Per-shank
+        because surface curvature means the shank tips break the brain surface
+        at different points in the probe's travel. A scalar is broadcast.
     probe_coords : nparray, shape (n_channels, 2)
         local [ap, dv] coordinates along the probe for each channel
         from channel_positions.npy (dv = 0 at the probe's physical tip)
     hist_rad : float
         head rotation relative to the atlas orientation (radians), from
         hist_rad_from_pitch(pitch_deg). 0.0 reproduces the old behavior.
-    final_depth : float
-        drive depth at which the histology scar was made (um)
+    final_depth : float or ndarray, shape (n_shanks,)
+        drive depth at which the histology scar was made (um), per shank.
+        A scalar is broadcast to all shanks.
 
     Returns
     -------
@@ -391,6 +424,10 @@ def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords, hist_ra
     # data params
     n_shanks = insert_coords.shape[0]
     n_channels = probe_coords.shape[0]
+
+    # depths are per-shank; scalars broadcast, so older saved dicts still work
+    probe_depth = parse_per_shank(probe_depth, n_shanks, name='probe_depth')
+    final_depth = parse_per_shank(final_depth, n_shanks, name='final_depth')
 
     # channel coords on the probe
     probe_ap_local = probe_coords[:, 0]
@@ -423,10 +460,10 @@ def probe_to_brain(insert_coords, tip_coords, probe_depth, probe_coords, hist_ra
         ch_ap = probe_ap_local[ch_mask]
 
         # get the distances from the shank insertion point
-        if np.isnan(final_depth):
-            dist_from_insert = probe_depth - ch_dv
+        if np.isnan(final_depth[s]):
+            dist_from_insert = probe_depth[s] - ch_dv
         else:
-            dist_from_insert = traj_len - (final_depth - probe_depth) - ch_dv
+            dist_from_insert = traj_len - (final_depth[s] - probe_depth[s]) - ch_dv
 
         # get the ap locations relative to shank tip
         tip_dv_local = np.min(ch_dv)
@@ -451,11 +488,14 @@ def get_channel_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, tip_coor
     Triangulates probe channel positions in the brain
     Matches each cell's best channel to its brain position
 
+    depth : float or ndarray, shape (n_shanks,)
+        this session's drive depth per shank (um)
     hist_rad : float
         head rotation relative to the atlas orientation (radians),
         passed through to probe_to_brain to orient the probe's local AP axis.
-    final_depth : float
-        drive depth of the histology scar (um), used to anchor channels to the tip
+    final_depth : float or ndarray, shape (n_shanks,)
+        drive depth of the histology scar (um) per shank, used to anchor
+        channels to the tip
 
     Returns
     -------
@@ -514,11 +554,185 @@ def get_channel_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, tip_coor
     return ch_pos_brain, ch_shank_idx, cell_pos, cell_shank_idx
 
 
+'''
+Shank bookkeeping / excluded shanks
+'''
+def get_shank_info(session_info_file):
+    '''
+    Read just the shank structure from the Anatomy sheet.
+
+    Split out of get_raw_anatomy_info so it can run before anything else in
+    the pipeline: it needs no histology, only the 'bird ID' and 'exclude'
+    columns.
+
+    Returns
+    -------
+    shank_info : dict
+        {bird: {'n_shanks': int,
+                'shanks': ['A', 'B', ...],     # shank letter for index 0, 1, ...
+                'exclude': bool array, shape (n_shanks,)}}
+    '''
+    probe_info = pd.read_excel(session_info_file, sheet_name='Anatomy', header=0)
+    probe_info = probe_info[probe_info['bird ID'].notna()]   # drop trailing rows
+
+    by_bird = {}
+    for _, row in probe_info.iterrows():
+        bird_shank = str(row['bird ID']).strip()
+        if '_' in bird_shank:
+            bird, shank = bird_shank.split(sep='_')
+        else:
+            bird, shank = bird_shank, 'A'
+        by_bird.setdefault(bird, {})[shank] = bool(row['exclude'] == True)
+
+    shank_info = {}
+    for bird, flags in by_bird.items():
+        letters = sorted(flags)          # A, B, C, ... -> shank index 0, 1, 2, ...
+        shank_info[bird] = {
+            'n_shanks': len(letters),
+            'shanks': letters,
+            'exclude': np.asarray([flags[s] for s in letters], dtype=bool),
+        }
+    return shank_info
+
+
+def flag_excluded_cells(data_dict, session_info_file, root_dir,
+                        drop_excluded=True, overwrite=False):
+    '''
+    Step 0: assign every sorted cell to a shank and flag the cells sitting on
+    shanks marked 'exclude' in the anatomy sheet, before any other data is
+    collected. Later steps apply the resulting mask so that excluded cells
+    never enter any downstream analysis.
+
+    Only needs channel_positions.npy, channel_map.npy and the waveform struct,
+    so it can run before the histology is read.
+
+    Params
+    ------
+    drop_excluded : bool
+        if False, the shank assignment is still stored but nothing is masked
+        (keep_cells is all True), which reproduces the old behavior
+    overwrite : bool
+        if False, sessions that already have 'keep_cells' are left alone.
+        The cached mask is invalidated automatically if the 'exclude' column
+        in the sheet no longer matches what is saved in the dict.
+
+    Writes
+    ------
+    data_dict[bird]['n_shanks'], ['shank_ids'], ['exclude_shank']
+    data_dict[bird][session]['cluster_ids']     KS IDs of the kept cells
+    data_dict[bird][session]['cell_shank_idx']  shank of each kept cell
+    data_dict[bird][session]['keep_cells']      bool mask over ALL sorted cells
+    '''
+    shank_info = get_shank_info(session_info_file)
+
+    for bird in data_dict.keys():
+        info = shank_info.get(bird)
+        if info is None:
+            print(f'  {bird}: not in the Anatomy sheet, assuming a single shank')
+            info = {'n_shanks': 1, 'shanks': ['A'], 'exclude': np.zeros(1, dtype=bool)}
+        n_shanks = info['n_shanks']
+        exclude = info['exclude'] if drop_excluded else np.zeros(n_shanks, dtype=bool)
+
+        # a changed 'exclude' column invalidates every cached per-cell array
+        cached = data_dict[bird].get('exclude_shank')
+        exclude_changed = (cached is not None
+                           and np.asarray(cached).shape == exclude.shape
+                           and not np.array_equal(np.asarray(cached), exclude))
+        if exclude_changed and not overwrite:
+            print(f"  WARNING: {bird}'s excluded shanks changed since the last run. "
+                  f"Re-run the pipeline with overwrite=True so waveform_props, "
+                  f"cell_pos and the population vectors are rebuilt.")
+
+        data_dict[bird]['n_shanks'] = n_shanks
+        data_dict[bird]['shank_ids'] = info['shanks']
+        data_dict[bird]['exclude_shank'] = exclude
+        if np.any(exclude):
+            names = [info['shanks'][s] for s in np.where(exclude)[0]]
+            print(f'  {bird}: excluding shank(s) {", ".join(names)}')
+
+        for session_id in data_dict[bird]['all_sessions']:
+            session_data = data_dict[bird][session_id]
+            if 'ephys' not in session_data['preprocessed_data']:
+                continue
+            if (not overwrite) and (not exclude_changed) and ('keep_cells' in session_data):
+                continue
+
+            # set paths
+            session_dir = f'{root_dir}{bird}/{bird}_{session_id}/'
+            ephys_id = session_data['ephys_id']
+            ks_dir = f"{bird}_{ephys_id}/{session_data['ks_folder']}/"
+            ephys_dir = f"{session_dir}{bird}_{ephys_id}/"
+
+            # best channel of each cell, in waveform struct order
+            waveform_struct = format_waveform_data.load_wf_data(session_dir, ks_dir=ks_dir)
+            _, wf_channels, _, ch_names = format_waveform_data.sort_wf_by_channel(
+                '', waveform_struct, data_dir=ephys_dir, return_ch_names=True)
+            wf_ch_idx = np.asarray([ch_names.index(ch) for ch in wf_channels])
+
+            # shank of every channel, accounting for channels excluded in kilosort
+            ch_pos_probe = np.load(f"{session_dir}{ks_dir}channel_positions.npy")
+            channel_map = np.load(f"{session_dir}{ks_dir}channel_map.npy").squeeze().astype(int)
+            ch_shank_idx = get_channel_shank(ch_pos_probe, n_shanks)
+            ch_shank_idx = remap_by_channel_map(ch_shank_idx, channel_map, len(ch_names),
+                                                fill_value=-1).astype(int)
+            cell_shank_idx = ch_shank_idx[wf_ch_idx]
+
+            # waveform_props/cell_pos are in waveform struct order, but
+            # aligned_spikes.npy rows come from cluster_group.tsv. The mask is
+            # only valid for both if the two orderings agree.
+            tsv_ids = format_waveform_data.get_good_cluster_ids(session_dir, ks_dir=ks_dir)
+            wf_ids = np.asarray(waveform_struct['goodIDs']).squeeze().astype(int)
+            if not np.array_equal(tsv_ids, wf_ids):
+                raise ValueError(
+                    f"{bird}_{session_id}: the good clusters in cluster_group.tsv do not "
+                    f"match waveformStruct goodIDs, so aligned_spikes.npy rows and "
+                    f"waveform_props columns are different cells -- re-export the "
+                    f"waveform struct before continuing"
+                )
+
+            # drop cells on an excluded shank or on a channel kilosort threw out
+            keep = (cell_shank_idx >= 0) & ~exclude[np.clip(cell_shank_idx, 0, None)]
+            session_data['keep_cells'] = keep
+            session_data['cluster_ids'] = wf_ids[keep]
+            session_data['cell_shank_idx'] = cell_shank_idx[keep]
+
+            n_drop = int(np.sum(~keep))
+            if n_drop:
+                print(f'    {session_id}: dropping {n_drop}/{keep.size} cells '
+                      f'(excluded shank or unmapped channel)')
+
+    return data_dict
+
+
+def get_keep_mask(data_dict, bird, session_id, n_cells_total):
+    '''
+    Fetch the excluded-shank mask for a session, checking it against the array
+    it is about to be applied to.
+
+    Use this for arrays loaded fresh from disk (e.g. aligned_spikes.npy), which
+    always hold every sorted cell. Arrays stored in the dict are masked once,
+    when they are created, and must not be masked again.
+
+    Returns None if the mask is missing or the wrong length, so the caller can
+    skip the session rather than silently mis-pairing cells.
+    '''
+    keep = data_dict[bird][session_id].get('keep_cells')
+    if keep is None:
+        return np.ones(n_cells_total, dtype=bool)
+    if keep.size != n_cells_total:
+        return None
+    return keep
+
+
 def get_raw_anatomy_info(session_info_file, data_dict):
     '''
     Load the anatomy info for each probe shank for each bird
 
-    Also gets the estimated depth of insertion for each session
+    Also gets the estimated depth of insertion for each session, per shank.
+    'approx. depth (um)' in each bird's session sheet may be a single number
+    (same depth on every shank) or a comma-separated list in shank order
+    (A, B, ...), since surface curvature means the shanks break the brain
+    surface at different points in the probe's travel.
 
     Anatomy sheet in good sessions should have (per shank):
 
@@ -548,40 +762,40 @@ def get_raw_anatomy_info(session_info_file, data_dict):
     # get the bird list
     bird_list = list(data_dict.keys())    
 
+    # get the shank structure first -- the per-session depths are per-shank,
+    # so n_shanks has to be known before the session sheets are read
+    shank_info = get_shank_info(session_info_file)
+    probe_info = pd.read_excel(session_info_file, sheet_name='Anatomy', header=0)
+    probe_info = probe_info[probe_info['bird ID'].notna()]   # drop trailing rows
+
     # load the session info for each bird
     for bird in bird_list:
+        n_shanks = shank_info.get(bird, {}).get('n_shanks', 1)
         session_list = data_dict[bird]['all_sessions']
         session_info = pd.read_excel(session_info_file, sheet_name=bird, header=1)
         session_info["id"] = session_info["date"].dt.strftime("%y%m%d")
 
-        # get the approx probe depth per session
+        # get the approx probe depth per session, per shank.
+        # the sheet cell is either one number (same depth on every shank) or a
+        # comma-separated list in shank order, e.g. "5940, 6060"
         for session_id in session_info['id']:
             if session_id in data_dict[bird].keys():
                 probe_depth = session_info.loc[session_info["id"] == session_id,
                                                "approx. depth (um)"].iloc[0]
-                data_dict[bird][session_id]['depth'] = probe_depth
-
-    # get N shanks
-    probe_info = pd.read_excel(session_info_file, sheet_name='Anatomy', header=0)
-    probe_info = probe_info[probe_info['bird ID'].notna()]   # drop trailing rows
-    shank_id_list = []
-    n_shanks_per_bird = {}
-    for i, row in probe_info.iterrows():
-        bird_shank = row['bird ID']
-        if '_' in bird_shank:
-            bird, shank = bird_shank.split(sep='_')
-        else:
-            bird, shank = bird_shank, 'A'
-        if shank in shank_id_list:
-            shank_idx = shank_id_list.index(shank)
-        else:
-            shank_idx = len(shank_id_list)
-            shank_id_list.append(shank)
-        n_shanks_per_bird[bird] = shank_idx + 1
+                data_dict[bird][session_id]['depth'] = parse_per_shank(
+                    probe_depth, n_shanks, name=f'{bird}_{session_id} approx. depth (um)')
 
     # to store anatomy info
+    preserved_exclude = {}
     for bird in bird_list:
-        n_shanks = n_shanks_per_bird.get(bird, 1)
+        n_shanks = shank_info.get(bird, {}).get('n_shanks', 1)
+
+        # keep whatever flag_excluded_cells decided, so drop_excluded=False
+        # isn't quietly undone here
+        prev_exclude = data_dict[bird].get('exclude_shank')
+        if prev_exclude is not None and np.shape(prev_exclude) == (n_shanks,):
+            preserved_exclude[bird] = np.asarray(prev_exclude, dtype=bool)
+
         data_dict[bird]['shank_dist'] = np.nan
         data_dict[bird]['raw_insert_coords'] = np.full((n_shanks, 2), np.nan)
         data_dict[bird]['raw_tip_coords'] = np.full((n_shanks, 3), np.nan)
@@ -590,22 +804,24 @@ def get_raw_anatomy_info(session_info_file, data_dict):
         data_dict[bird]['head_angle'] = np.full(2, np.nan)
         data_dict[bird]['probe_angle_surgery'] = 0.0
         data_dict[bird]['final_depth'] = np.full(n_shanks, np.nan)
-        data_dict[bird]['exclude_shank'] = np.zeros(n_shanks, dtype=bool)
+        data_dict[bird]['exclude_shank'] = preserved_exclude.get(
+            bird, np.zeros(n_shanks, dtype=bool))
 
         
     # extract the raw coords
     for i, row in probe_info.iterrows():
-        bird_shank = row['bird ID']
+        bird_shank = str(row['bird ID']).strip()
         if '_' in bird_shank:
             bird, shank = bird_shank.split(sep='_')
         else:
             bird, shank = bird_shank, 'A'
         if bird not in data_dict:
             continue
-        shank_idx = shank_id_list.index(shank)
+        shank_idx = shank_info[bird]['shanks'].index(shank)
 
         # ---- shank excluded from analysis ----
-        data_dict[bird]['exclude_shank'][shank_idx] = (row['exclude'] == True)
+        if bird not in preserved_exclude:
+            data_dict[bird]['exclude_shank'][shank_idx] = (row['exclude'] == True)
 
         # ---- known features of the probe ----
         # distance between shanks
@@ -699,20 +915,23 @@ def convert_anatomy_info(data_dict, tol_frac=0.1):
             print(f"  {bird} shank {s}: insert -> tip tilt is {ml_tilt[s]:.1f} deg but 'angle ML' is "
                   f"{angle_ml[s]:.1f} deg -- if this shank crossed the midline, make its tip ML negative")
 
-        # compare the experimentally and histologically measured depths
+        # compare the experimentally and histologically measured depths.
+        # done per shank: averaging across shanks lets a good shank mask a bad one
         has_tip_hist = ~np.isnan(raw_tip[:, 0]) & ~np.isnan(raw_tip[:, 1]) & ~exclude
-        expt_depth = data_dict[bird]['final_depth']
+        expt_depth = parse_per_shank(data_dict[bird]['final_depth'], len(exclude),
+                                     name=f'{bird} final_depth')
         if not np.any(has_tip_hist):
             print(f'  {bird}: no tip histology - depth check skipped')
         else:
-            hist_depth = estimate_depth_hist(insert_coords[has_tip_hist],
-                                             tip_coords[has_tip_hist])
-            if np.isnan(hist_depth):
-                print(f'  {bird}: histology incomplete - could not check depth')
-            else:
-                pct_diff = np.abs(hist_depth - expt_depth) / expt_depth
+            for s in np.where(has_tip_hist)[0]:
+                hist_depth = estimate_depth_hist(insert_coords[[s]], tip_coords[[s]])
+                if np.isnan(hist_depth):
+                    print(f'  {bird} shank {s}: histology incomplete - could not check depth')
+                    continue
+                pct_diff = np.abs(hist_depth - expt_depth[s]) / expt_depth[s]
                 if pct_diff > tol_frac:
-                    print(f"  {bird}: noted final depth = {expt_depth:.0f} um vs histology depth = {hist_depth:.0f} um"
+                    print(f"  {bird} shank {s}: noted final depth = {expt_depth[s]:.0f} um vs "
+                          f"histology depth = {hist_depth:.0f} um "
                           f"-- double-check histology measurements and insertion notes")
 
     return data_dict
@@ -722,6 +941,11 @@ def save_cell_positions(data_dict, root_dir):
     '''
     Adds the channel locations in brain space and the locations of
     the best channel for all good cells to the data dict
+
+    Cell-level fields ('cell_pos', 'shank_idx') are masked by 'keep_cells'
+    from flag_excluded_cells, so cells on excluded shanks never get saved.
+    Channel-level fields ('channel_pos', 'channel_shank_idx') cover the whole
+    probe, since the stim step indexes them by raw channel number.
     '''
     for bird in data_dict.keys():
         print(f'\nlocalizing cells for {bird}')
@@ -757,9 +981,19 @@ def save_cell_positions(data_dict, root_dir):
                 hist_rad=hist_rad, final_depth=final_depth
             )
             
+            # drop cells on excluded shanks (mask from flag_excluded_cells).
+            # cell_pos is rebuilt from scratch here, so it is always full
+            # length at this point and safe to mask on every run.
+            keep = get_keep_mask(data_dict, bird, session_id, cell_pos.shape[0])
+            if keep is None:
+                print(f'  skipping {session_id}: keep_cells is stale '
+                      f'(re-run flag_excluded_cells with overwrite=True)')
+                continue
+
             # save everything
             data_dict[bird][session_id]['channel_pos'] = ch_pos
-            data_dict[bird][session_id]['cell_pos'] = cell_pos
-            data_dict[bird][session_id]['shank_idx'] = cell_shank_idx
+            data_dict[bird][session_id]['channel_shank_idx'] = ch_shank_idx
+            data_dict[bird][session_id]['cell_pos'] = cell_pos[keep]
+            data_dict[bird][session_id]['shank_idx'] = cell_shank_idx[keep]
 
     return data_dict
