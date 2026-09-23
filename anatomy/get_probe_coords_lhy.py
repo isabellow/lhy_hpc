@@ -68,6 +68,7 @@ def get_channel_shank(probe_coords, n_shanks):
 '''
 Anatomical functions
 '''
+# for converting distance to ant. com. to rough AP position
 def lhy_rel2abs(rel_ap):
     '''
     Given the tip position relative to the anterior commissure,
@@ -86,21 +87,29 @@ def lhy_abs2rel(abs_ap):
     '''
     return abs_ap - ANT_COM_AP  
 
-def dmdl_rel2abs(rel_ap):
-    '''
-    Given hippocampus width, get AP position relative to lamda (in microns)
-
-    DM/DL boundary follows roughly a 45 degree angle relative to the midline
-    and is 900 um lateral at 3800 anterior - TODO check this!
-    (so 0 L at 4700 A)
-    '''
-    return 4700 - rel_ap
+# for converting HPC width to rough AP position
+HP_WIDTH_FIT = dict(L=2285.8, ap0=3682.6, k=1001.8, resid_sd=156.4)   # um
 
 def dmdl_abs2rel(abs_ap):
-    '''
-    Given AP position relative to lamda, get hippocampus width
-    '''
-    return 4700 - abs_ap
+    '''Hippocampal width (um) expected at an AP relative to lambda (um).'''
+    f = HP_WIDTH_FIT
+    return f['L'] * np.exp(-np.exp((np.asarray(abs_ap, float) - f['ap0']) / f['k']))
+
+def dmdl_rel2abs(rel_ap):
+    '''AP relative to lambda (um) for a hippocampal width (um).'''
+    f = HP_WIDTH_FIT
+    w = np.asarray(rel_ap, float)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ap = f['ap0'] + f['k'] * np.log(np.log(f['L'] / w))
+    return np.where((w > 0) & (w < f['L']) & np.isfinite(ap), ap, np.nan)
+
+def dmdl_ap_sd(rel_ap):
+    '''Rough SD (um) of an AP from a hippocampal width.'''
+    f = HP_WIDTH_FIT
+    w = np.asarray(rel_ap, float)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        slope = f['k'] / (w * np.log(f['L'] / w))
+    return np.where((w > 0) & (w < f['L']), np.abs(slope) * f['resid_sd'], np.nan)
 
 
 '''
@@ -554,6 +563,7 @@ def get_raw_anatomy_info(session_info_file, data_dict):
 
     # get N shanks
     probe_info = pd.read_excel(session_info_file, sheet_name='Anatomy', header=0)
+    probe_info = probe_info[probe_info['bird ID'].notna()]   # drop trailing rows
     shank_id_list = []
     n_shanks_per_bird = {}
     for i, row in probe_info.iterrows():
@@ -579,7 +589,7 @@ def get_raw_anatomy_info(session_info_file, data_dict):
         data_dict[bird]['probe_angle_ml'] = np.full(n_shanks, np.nan)
         data_dict[bird]['head_angle'] = np.full(2, np.nan)
         data_dict[bird]['probe_angle_surgery'] = 0.0
-        data_dict[bird]['final_depth'] = np.nan
+        data_dict[bird]['final_depth'] = np.full(n_shanks, np.nan)
         data_dict[bird]['exclude_shank'] = np.zeros(n_shanks, dtype=bool)
 
         
@@ -615,7 +625,7 @@ def get_raw_anatomy_info(session_info_file, data_dict):
 
         # ---- measured experimentally ----
         # probe depth for histology scar
-        data_dict[bird]['final_depth'] = row['final depth']
+        data_dict[bird]['final_depth'][shank_idx] = row['final depth']
 
         # head angle during probe implant
         ml_diff = row['ML diff']

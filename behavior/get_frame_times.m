@@ -2,12 +2,12 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Set file paths
 addpath(genpath('C:\Users\ilow1\Documents\code\lhy_hpc\utils\')) % functions to read Intan files
-bird_id = 'LMN86';
-session_date = '260831';
+bird_id = 'ROS107';
+session_date = '260921';
 % session_root = ['Z:\Isabel\data\hpc_implants\', bird_id, '\'];
 session_root = ['Z:\Isabel\data\lhy_implants\', bird_id, '\'];
 session_dir = [bird_id, '_', session_date '\'];
-ephys_dir = 'LMN86_260831_110849\';
+ephys_dir = 'ROS107_260921_120030\';
 
 data_dir = fullfile(fileparts(session_root), [session_dir, ephys_dir]);
 
@@ -24,7 +24,7 @@ mkdir(save_dir)
 frame_rate = 50;
 start_frame_idx = 0*frame_rate + 1; % first frame to keep
 % end_frame_idx = ((1*60 + 55)*60 + 0)*50; % number of frames to keep
-end_frame_idx = 464967;
+end_frame_idx = 401245;
 
 %% load the frame times from Intan
 % Get the digital input (frame times on dig in ch1)

@@ -261,7 +261,7 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
                 session_index = np.append(session_index, np.full(n_cells, sess_idx))
                 session_keys.append((bird, session_id))
                 sess_idx += 1
-    data_dict[bird]['all_waveform_props'] = all_waveform_props
+        data_dict[bird]['all_waveform_props'] = all_waveform_props
 
     if len(all_waveform_props) > 0:
         asymm, width, log_fr = all_waveform_props[0], all_waveform_props[1], all_waveform_props[2]
@@ -722,7 +722,7 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
 
 if __name__ == "__main__":
     # Example: add a couple of new birds to an existing (or new) struct
-    build_or_update_session_data(new_bird_ids=None, overwrite=False)
+    build_or_update_session_data(new_bird_ids=['ROS107'], overwrite=False)
 
 #     # Example: just pick up new sessions for birds already in the dict
-#     build_or_update_session_data(new_bird_ids=['LMN86'])
+#     build_or_update_session_data(new_bird_ids=None)

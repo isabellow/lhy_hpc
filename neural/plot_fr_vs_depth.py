@@ -30,7 +30,7 @@ session_info_file = f"{root_dir}good_sessions.xlsx"
 title_size = 14
 axis_label = 12
 tick_label = 9
-ylims = [5810, 4390]
+ylims = [6510, 4490]
 alpha_pts = 0.8
 size_pts = 6
 

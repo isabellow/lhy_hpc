@@ -25,9 +25,36 @@ The JSON stores raw image geometry only, in full-resolution pixels:
     surface_px  : [[x, y], ...] polyline along the dorsal brain surface
     ellipses    : [{center_px, axes_px, angle_deg}, ...]
     scars       : [{shank, points_px: [[x, y], ...]}, ...]  probe-scar traces
+    dmdl_px     : [[x, y], ...] the DM/DL boundary where it meets the dorsal
+                  surface, one point per hemisphere; its distance from the
+                  midline is the hippocampal width, which gives an AP estimate
+                  from a landmark at the surface rather than from the AC
+    source      : 'image' for a high-resolution scan, or 'slide_crop' for a
+                  section annotated on the whole-slide overview.  crop_px is
+                  the part of that image this section occupies -- set both for
+                  overview crops and for one section of an image that covers
+                  two.  Pixels, and so all annotations, are always in the
+                  coordinates of the image named by `file`.
+    slide_xy_px : position of this section on its slide overview image, from the
+                  nd2 stage coordinates or set by hand in the GUI; with
+                  slide_order it also fixes the cutting order (display only)
     slide_order : position of the section on its slide, in cutting order
-    gap_before  : number of sections lost / not imaged just before this one
+    gap_before  : sections cut between this one and the previous one that are
+                  not in the series -- lost, or on the slide but never imaged
+                  at high resolution (counted from the slide overview)
     flipped     : section was mounted mirror-imaged
+    discarded   : this entry is not a section at all (detritus, a bubble, a
+                  smear that got picked up as a region and imaged).  It keeps
+                  its place in the GUI list so it can be un-discarded, but it
+                  takes no section_index, contributes nothing to the AP count
+                  and is NOT counted as a lost section either -- the slot it
+                  occupies on the slide is simply skipped
+    piece_group : a section that broke into several pieces during mounting has
+                  one entry per piece, all sharing this group id.  The whole
+                  group takes ONE section_index (one step of the AP series)
+                  and each piece keeps its own midline / surface / ellipses /
+                  scars, so every annotation is compared only against the
+                  landmarks on its own piece.  None for an intact section
 
 Brain coordinates are derived at load time, so changing the thickness, the AC
 reference, the DV convention or a flip flag never means redrawing anything.
@@ -41,7 +68,8 @@ ML : signed distance from the section's midline, + = implanted hemisphere,
      when implant_side = 'right'.  `flipped` sections have their ML negated.
      With implant_side = None the side is taken from the traced scars.
 AP : sections are ordered by (slide, slide_order); section_index is that rank
-     plus the cumulative gap_before.  Then
+     plus the cumulative gap_before.  Discarded entries are left out entirely,
+     and all the pieces of one broken section share a single rank.  Then
          ap_from_ac_um = ap_sign * (section_index - ac_index)
                          * section_thickness_um * section_interval * ap_scale
          ap_um         = ac_ap_um + ap_from_ac_um
@@ -68,7 +96,7 @@ except ImportError:          # the GUI does not need pandas; the loader does
     pd = None
 
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 4
 
 # Slide1-N_Region000M_Channel395 nm_Seq0008.nd2
 DEFAULT_FILE_PATTERN = (r'Slide\d+-(?P<slide>\d+)_Region(?P<region>\d+)'
@@ -81,8 +109,12 @@ DEFAULT_SERIES_PARAMS = OrderedDict([
     ('section_interval', 1),         # cut sections per step of section_index
     ('ap_sign', -1),                 # -1: higher section_index is more POSTERIOR
     ('ac_section', None),            # section key of the anterior commissure ref
+    ('ac_section_other', None),      # the AC in the OTHER hemisphere, if it sits
+                                     # on a different section (slicing yaw)
     ('ac_ap_um', None),              # AP of that reference, relative to lambda
     ('implant_side', None),          # 'right' / 'left' image side, None = from scars
+    ('ap_anchor', 'ac'),             # 'ac', 'hp', or 'shear' (both, by depth)
+    ('ac_dv_um', None),              # depth of the AC below the surface, for the angle estimate
     ('inplane_scale', 1.0),          # multiply ML/DV by this (tissue shrinkage)
     ('ap_scale', 1.0),               # multiply AP spacing by this
 ])
@@ -140,11 +172,23 @@ def discover_sections(hist_dir, file_pattern=DEFAULT_FILE_PATTERN,
 def empty_section(info, slide_order):
     return OrderedDict([
         ('file', info['file']),
+        ('source', info.get('source', 'image')),   # 'image' or 'slide_crop'
+        ('crop_px', info.get('crop_px')),          # [x0, y0, x1, y1]: part of the image to show
+        ('part', None),                            # 'j/n' when an image covers several sections
+        ('superseded', False),                     # replaced by a better image, or split up
+        ('discarded', False),                      # not a section: detritus, imaged by mistake
+        ('piece_group', None),                     # pieces of one broken section share this id
+        ('companion_of', None),                    # overview crop used to annotate the part of
+                                                   # this section the high-res scan missed
         ('slide', info['slide']),
         ('region', info['region']),
         ('slide_order', int(slide_order)),
         ('gap_before', 0),
         ('flipped', False),
+        ('slide_xy_px', None),         # where this section sits on the slide overview
+        ('slide_xy_source', None),      # 'auto' (stage metadata) or 'manual'
+        ('order_source', 'default'),    # 'default', 'slide' (from the overview) or 'manual'
+        ('gap_source', 'default'),      # what set gap_before: 'default', 'slide' or 'manual'
         ('section_index', None),       # derived; rewritten by assign_section_indices
         ('pixel_size_um', None),
         ('image_shape', None),
@@ -153,6 +197,7 @@ def empty_section(info, slide_order):
         ('surface_px', None),
         ('ellipses', []),
         ('scars', []),
+        ('dmdl_px', []),               # DM/DL boundary at the surface, one point per side
         ('notes', ''),
     ])
 
@@ -162,17 +207,121 @@ def next_slide_order(sections, slide):
     return max(orders + [0]) + 1
 
 
+def group_id(ann, key):
+    """
+    Which section this entry belongs to: its piece_group if it is one piece of
+    a broken section, the host's group if it is an overview companion, and
+    otherwise the key itself.  Everything in one group counts as a single
+    section in the AP series.
+    """
+    secs = ann['sections']
+    host = secs[key].get('companion_of')
+    if host in secs and host != key:
+        return group_id(ann, host)
+    return secs[key].get('piece_group') or key
+
+
+def _own(ann, key):
+    """Sort position of one entry; a companion sits right after its host."""
+    secs = ann['sections']
+    s = secs[key]
+    host = s.get('companion_of')
+    if host in secs and host != key:
+        h = secs[host]
+        return (h['slide'], h['slide_order'], h['region'], 1)
+    return (s['slide'], s['slide_order'], s['region'], 0)
+
+
+def group_members(ann, key):
+    """Every entry in the same piece group as `key` (itself included), in order."""
+    gid = group_id(ann, key)
+    return [k for k in display_keys(ann) if group_id(ann, k) == gid]
+
+
+def new_group_id(ann, key):
+    """An unused piece-group id, based on the key it is seeded from."""
+    base = 'grp_%s' % key
+    used = {s.get('piece_group') for s in ann['sections'].values()}
+    gid, n = base, 1
+    while gid in used:
+        n += 1
+        gid = '%s_%d' % (base, n)
+    return gid
+
+
+def _sort_keys(ann, keys):
+    """
+    Sort entries by (slide, slide_order, region), keeping the pieces of one
+    broken section together: a group sits where its earliest piece sits.
+    """
+    def own(k):
+        return _own(ann, k)
+
+    first = {}
+    for k in keys:
+        gid = group_id(ann, k)
+        if gid not in first or own(k) < first[gid]:
+            first[gid] = own(k)
+    return sorted(keys, key=lambda k: (first[group_id(ann, k)], own(k)))
+
+
+def display_keys(ann):
+    """
+    Every entry the GUI should list, in order -- including discarded ones, so
+    they can be looked at and un-discarded.  Superseded entries are left out.
+    """
+    secs = ann['sections']
+    return _sort_keys(ann, [k for k in secs if not secs[k].get('superseded')])
+
+
+def series_keys(ann):
+    """The entries that make up the AP series: not superseded, not discarded."""
+    secs = ann['sections']
+    return _sort_keys(ann, [k for k in secs if not secs[k].get('superseded')
+                            and not secs[k].get('discarded')])
+
+
+def piece_labels(ann):
+    """
+    {key: (i, n)} -- this entry is piece i of n of its section.  (1, 1) for an
+    intact section.
+    """
+    out = OrderedDict()
+    seen = OrderedDict()
+    for k in display_keys(ann):
+        gid = group_id(ann, k)
+        seen.setdefault(gid, []).append(k)
+    for gid, members in seen.items():
+        for i, k in enumerate(members):
+            out[k] = (i + 1, len(members))
+    return out
+
+
 def assign_section_indices(ann):
     """
     Order sections by (slide, slide_order, region) and write section_index =
-    rank + cumulative gap_before.  Returns the ordered list of keys.
+    rank + cumulative gap_before.
+
+    Superseded entries and discarded ones (detritus that was imaged by
+    mistake) are left out and get section_index None; a discard is NOT counted
+    as a lost section, it simply does not exist.  All the pieces of a broken
+    section share one section_index, so a break costs no AP steps; the group
+    takes the gap_before of its first piece.
+
+    Returns the ordered list of keys in the series.
     """
     secs = ann['sections']
-    keys = sorted(secs, key=lambda k: (secs[k]['slide'], secs[k]['slide_order'],
-                                       secs[k]['region']))
+    keys = series_keys(ann)
+    for k in secs:
+        if secs[k].get('superseded') or secs[k].get('discarded'):
+            secs[k]['section_index'] = None
     idx = 0
-    for i, k in enumerate(keys):
-        idx += int(secs[k].get('gap_before') or 0) + (1 if i else 0)
+    prev_gid = None
+    for k in keys:
+        gid = group_id(ann, k)
+        if gid != prev_gid:
+            idx += int(secs[k].get('gap_before') or 0) + (1 if prev_gid is not None else 0)
+            prev_gid = gid
         secs[k]['section_index'] = idx
     return keys
 
@@ -180,11 +329,36 @@ def assign_section_indices(ann):
 def duplicate_slide_orders(ann):
     seen, dup = {}, []
     for k, s in ann['sections'].items():
+        if s.get('superseded') or s.get('discarded') or s.get('companion_of'):
+            continue
         tag = (s['slide'], s['slide_order'])
         if tag in seen:
             dup.append((seen[tag], k))
         seen[tag] = k
     return dup
+
+
+def noncontiguous_groups(ann):
+    """
+    Piece groups with another section sitting between their pieces, in slide
+    order.  A section cannot have been cut between two pieces of itself, so
+    this means either the grouping or the slide order is wrong.  Returns
+    {group id: [keys in the way]}.
+    """
+    secs = ann['sections']
+    live = [k for k in secs if not secs[k].get('superseded')
+            and not secs[k].get('discarded') and not secs[k].get('companion_of')]
+    live.sort(key=lambda k: _own(ann, k))
+    out = OrderedDict()
+    for gid in {secs[k].get('piece_group') for k in live} - {None}:
+        at = [i for i, k in enumerate(live) if secs[k].get('piece_group') == gid]
+        if len(at) < 2:
+            continue
+        between = [live[i] for i in range(at[0], at[-1] + 1)
+                   if secs[live[i]].get('piece_group') != gid]
+        if between:
+            out[gid] = between
+    return out
 
 
 def new_annotation(bird, hist_dir, sections, series_params=None):
@@ -221,6 +395,23 @@ def migrate_annotation(ann):
                 warnings.warn('%s: v1 tip points dropped -- trace the scar '
                               'instead' % k)
         ann['format_version'] = 2
+    if ann.get('format_version', 2) < 3:
+        ann['format_version'] = 3
+    if ann.get('format_version', 3) < 4:
+        ann['format_version'] = 4
+    for s in ann['sections'].values():          # fields added along the way
+        s.setdefault('source', 'image')
+        s.setdefault('crop_px', None)
+        s.setdefault('part', None)
+        s.setdefault('superseded', False)
+        s.setdefault('discarded', False)
+        s.setdefault('piece_group', None)
+        s.setdefault('companion_of', None)
+        s.setdefault('dmdl_px', [])
+        s.setdefault('slide_xy_px', None)
+        s.setdefault('slide_xy_source', None)
+        s.setdefault('order_source', 'default')
+        s.setdefault('gap_source', 'manual' if s.get('gap_before') else 'default')
     for name, default in DEFAULT_SERIES_PARAMS.items():
         ann['series'].setdefault(name, default)
     assign_section_indices(ann)
@@ -253,6 +444,97 @@ def _json_default(obj):
     if isinstance(obj, np.ndarray):
         return obj.tolist()
     raise TypeError(type(obj))
+
+
+# --------------------------------------------------------------------------- #
+#  HIPPOCAMPAL WIDTH AS AN AP LANDMARK                                         #
+# --------------------------------------------------------------------------- #
+#
+# Width of the hippocampus (the DM/DL boundary's distance from the midline at
+# the brain surface) against AP, fitted to 848 measurements from 11 atlas
+# brains (hippocampusWidths.fig).  A Gompertz curve,
+#
+#     width(ap) = L * exp(-exp((ap - ap0) / k))         ap in um from lambda
+#
+# fits them with an RMS of 156 um, with no bias anywhere along the range.  It
+# has the same three parameters as a plain logistic but is asymmetric: it
+# approaches its anterior plateau slowly and falls away gently posteriorly,
+# which is what the measurements do (a logistic gives RMS 163 and runs ~90 um
+# low posterior of 4.5 mm), and its upper asymptote sits above all but 2% of
+# the measured widths, so few sections fall outside the invertible range.
+#
+# Most of that spread is between birds, not within one: fitting each bird
+# separately leaves an RMS of only 72 um, while the birds' curves differ from
+# each other by ~150 um.  So resid_sd is the right uncertainty for a single
+# section from a new bird, and DM/DL marks on several sections of one bird
+# share most of their error rather than averaging it away.
+#
+# Because the landmark sits AT THE SURFACE, an AP from it is much less
+# sensitive to the section angle than one measured from a deep landmark such
+# as the anterior commissure -- which is what makes comparing the two useful.
+HP_WIDTH_FIT = dict(L=2285.8, ap0=3682.6, k=1001.8, resid_sd=156.4,
+                    within_bird_sd=72.0, n_brains=11, n_points=848)
+
+# Left/right asymmetry, from the 403 sections in hippocampusWidths.fig that
+# carry a measurement for BOTH hemispheres of the same brain.
+#
+# The two hemispheres of one section differ in width by 66 um (median), but
+# most of that is measurement scatter: |difference| is roughly flat at ~85 um
+# across the whole width range, which is the signature of independent error on
+# each boundary mark rather than of geometry (a slicing yaw would peak where
+# the width-AP curve is steepest and collapse at small widths, which it does
+# not) or of a proportional size difference (which would grow with width).
+#
+# Underneath that scatter there IS a consistent per-brain offset.  Taking the
+# sd-weighted mean over each brain's own sections -- essential, because the
+# unweighted mean is dominated by the flat ends of the curve where width
+# carries almost no AP information -- the hemispheres of one brain differ in
+# apparent AP by 73 um (SD across brains), at most 172 um, against a
+# per-brain standard error of ~65 um.
+#
+# So a per-hemisphere AP anchor is worth having, but it is a small correction
+# and its cause is ambiguous: a 172 um offset is only ~1.6 deg of slicing yaw
+# at a 1500 um half-width, and equally consistent with genuine asymmetry.
+# Anchoring each hemisphere on its own marks is agnostic about which it is;
+# reading a yaw angle off it would not be.
+HP_HEMISPHERE_FIT = dict(offset_sd=73.0, offset_mean_abs=58.0, offset_max=172.0,
+                         paired_sections=403, n_brains=11, se_per_brain=65.0)
+
+
+def ap_to_hp_width(ap_um, fit=None):
+    """Expected hippocampal width (um) at an AP (um from lambda, + anterior)."""
+    f = fit or HP_WIDTH_FIT
+    return f['L'] * np.exp(-np.exp((np.asarray(ap_um, float) - f['ap0']) / f['k']))
+
+
+def hp_width_to_ap(width_um, fit=None):
+    """
+    AP (um from lambda) for a hippocampal width (um) -- the inverse of the
+    Gompertz above.  NaN where the width is outside the fitted range.
+    """
+    f = fit or HP_WIDTH_FIT
+    w = np.asarray(width_um, float)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ap = f['ap0'] + f['k'] * np.log(np.log(f['L'] / w))
+    bad = ~np.isfinite(ap) | (w <= 0) | (w >= f['L'])
+    if np.any(bad):
+        warnings.warn('hippocampal width outside the fitted range (0 - %.0f um): '
+                      'AP undefined there' % f['L'])
+    return np.where(bad, np.nan, ap)
+
+
+def hp_ap_sd(width_um, fit=None):
+    """
+    Rough SD (um) of an AP estimated from a hippocampal width, from the spread
+    of the atlas measurements propagated through the fit.  About 230 um near a
+    width of 1000 um, where the curve is steepest, and several hundred um
+    either side of that -- the anterior plateau carries little AP information.
+    """
+    f = fit or HP_WIDTH_FIT
+    w = np.asarray(width_um, float)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        dap_dw = f['k'] / (w * np.log(f['L'] / w))
+    return np.where((w > 0) & (w < f['L']), np.abs(dap_dw) * f['resid_sd'], np.nan)
 
 
 # --------------------------------------------------------------------------- #
@@ -429,7 +711,14 @@ def section_ap(ann, series=None):
         return out
     step = float(thick) * float(p['section_interval']) * float(p['ap_scale'])
     ac_idx = secs[ac]['section_index']
+    if ac_idx is None:                       # the AC section itself was set aside
+        for k in secs:
+            out[k] = (np.nan, np.nan)
+        return out
     for k, s in secs.items():
+        if s.get('section_index') is None:   # superseded: not part of the series
+            out[k] = (np.nan, np.nan)
+            continue
         rel = float(p['ap_sign']) * (s['section_index'] - ac_idx) * step
         absolute = rel + float(p['ac_ap_um']) if p['ac_ap_um'] is not None else np.nan
         out[k] = (rel, absolute)
@@ -455,7 +744,7 @@ def resolve_implant_sign(ann, series=None, pixel_size_override=None,
         return sign, 'implant_side'
     ml_all, depth_all = [], []
     for s in ann['sections'].values():
-        if not s.get('scars'):
+        if not s.get('scars') or s.get('superseded') or s.get('discarded'):
             continue
         s = dict(s)
         if pixel_size_override is not None:
@@ -491,11 +780,16 @@ class LHyROIs(object):
     """
     Loaded annotations for one bird.
 
-    sections : DataFrame, one row per section
+    sections : DataFrame, one row per section, including hp_width_um / ap_hp_um
+               (AP from the hippocampal-width landmark) and ap_ac_um (AP from
+               the anterior commissure)
     rois     : DataFrame, one row per ellipse; 'boundary' holds an (n, 3)
                [ML, AP, DV] array for plotting
     scars    : DataFrame, one row per resampled scar-trace point
                (shank, key, section_index, ml_um, ap_um, ap_from_ac_um, dv_um)
+    discarded: keys of entries marked as not being sections at all (detritus
+               that was imaged by mistake); they are left out of everything
+               above and take no place in the AP series
     """
 
     def __init__(self, ann, dv_mode='local', ref_ml_um=None, n_boundary=180,
@@ -520,8 +814,23 @@ class LHyROIs(object):
 
         aps = section_ap(ann, self.series)
         self.geoms = {}
-        sec_rows, roi_rows, scar_rows = [], [], []
+        self.discarded = []
+        pieces = piece_labels(ann)
+        sec_rows, roi_rows, scar_rows, hp_rows = [], [], [], []
         for key, s in ann['sections'].items():
+            if s.get('superseded'):
+                if s.get('ellipses') or s.get('scars') or s.get('dmdl_px'):
+                    warnings.warn('%s: this entry was superseded (a better image, or '
+                                  'an image split into its separate sections), so its '
+                                  'annotations are ignored -- redraw them' % key)
+                continue
+            if s.get('discarded'):
+                self.discarded.append(key)
+                if s.get('ellipses') or s.get('scars') or s.get('dmdl_px'):
+                    warnings.warn('%s: marked as not a section (discarded), so its '
+                                  'annotations are ignored -- un-discard it in the '
+                                  'GUI if that is wrong' % key)
+                continue
             s = dict(s)
             if pixel_size_override is not None:
                 s['pixel_size_um'] = pixel_size_override
@@ -534,8 +843,27 @@ class LHyROIs(object):
             except ValueError as err:
                 why = str(err)
             self.geoms[key] = geom
+            width = ap_hp = sd_hp = np.nan
+            if geom is not None and s.get('dmdl_px'):
+                ml, _ = geom.px_to_brain(np.asarray(s['dmdl_px'], float))
+                width = float(np.mean(np.abs(ml)))
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore')
+                    ap_hp = float(hp_width_to_ap(width))
+                    sd_hp = float(hp_ap_sd(width))
+                    for m in ml:            # one constraint per hemisphere
+                        hp_rows.append(dict(
+                            key=key, section_index=s['section_index'],
+                            side=1 if m >= 0 else -1, ml_um=float(m),
+                            width_um=abs(float(m)),
+                            ap_hp_um=float(hp_width_to_ap(abs(m))),
+                            ap_hp_sd_um=float(hp_ap_sd(abs(m))),
+                            ap_series_um=ap_abs))
+            piece, n_pieces = pieces.get(key, (1, 1))
             sec_rows.append(dict(
                 key=key, slide=s['slide'], region=s['region'],
+                hp_width_um=width, ap_hp_um=ap_hp, ap_hp_sd_um=sd_hp,
+                piece_group=s.get('piece_group'), piece=piece, n_pieces=n_pieces,
                 slide_order=s['slide_order'], gap_before=s['gap_before'],
                 flipped=bool(s['flipped']), section_index=s['section_index'],
                 lhy=s['lhy'], ap_from_ac_um=ap_rel, ap_um=ap_abs,
@@ -547,7 +875,10 @@ class LHyROIs(object):
 
             if geom is None:
                 if s.get('ellipses') or s.get('scars'):
-                    warnings.warn('%s: annotations skipped -- %s' % (key, why))
+                    extra = ('  Every piece of a broken section needs its own '
+                             'midline and surface: pixel distances do not carry '
+                             'across pieces.' if n_pieces > 1 else '')
+                    warnings.warn('%s: annotations skipped -- %s%s' % (key, why, extra))
                 continue
 
             for j, e in enumerate(s.get('ellipses', [])):
@@ -580,10 +911,220 @@ class LHyROIs(object):
         self.scars = pd.DataFrame(scar_rows, columns=[
             'shank', 'key', 'trace', 'section_index', 'ml_um', 'ap_um',
             'ap_from_ac_um', 'dv_um'])
+        self.hp_marks = pd.DataFrame(hp_rows, columns=[
+            'key', 'section_index', 'side', 'ml_um', 'width_um', 'ap_hp_um',
+            'ap_hp_sd_um', 'ap_series_um'])
+
+        self.sections['ap_ac_um'] = self.sections['ap_um']
+        self.ap_shift_um = 0.0
+        self.shear = None
+        anchor = str(self.series.get('ap_anchor', 'ac')).lower()
+        if anchor == 'hp':
+            self._anchor_on_hp()
+        elif anchor == 'shear':
+            self._anchor_shear()
+        elif anchor not in ('ac', 'none'):
+            warnings.warn("ap_anchor %r not understood -- using 'ac'" % anchor)
 
         if len(self.rois) and self.rois['ap_um'].isna().all():
             warnings.warn('AP is NaN everywhere: set section_thickness_um, the '
                           'AC section and ac_ap_um (or use ap_ref="ac")')
+
+    # -------------------------------------------------------- AP anchor ---- #
+    def _anchor_on_hp(self):
+        """Shift the whole AP series so it matches the Hp-width landmark."""
+        marked = self.sections.dropna(subset=['ap_hp_um', 'ap_um'])
+        if len(marked) == 0:
+            warnings.warn("ap_anchor='hp' but no section has a DM/DL mark -- "
+                          'AP left on the anterior commissure')
+            return
+        weights = 1.0 / np.maximum(marked['ap_hp_sd_um'].to_numpy(float), 50.0) ** 2
+        delta = marked['ap_hp_um'].to_numpy(float) - marked['ap_um'].to_numpy(float)
+        shift = float(np.sum(weights * delta) / np.sum(weights))
+        self.ap_shift_um = shift
+        self.sections['ap_um'] += shift
+        for tbl in (self.rois, self.scars):
+            if len(tbl):
+                tbl['ap_um'] += shift
+        for b in self.rois['boundary'] if len(self.rois) else []:
+            b[:, 1] += shift
+        warnings.warn('AP shifted by %+.0f um to match the Hp-width landmark on '
+                      '%d section(s)' % (shift, len(marked)))
+
+    # ------------------------------------------------------- shear anchor -- #
+    def _hp_shift(self, side=None):
+        """
+        Weighted mean of (AP from the hippocampal width) - (AP from the AC
+        series), over the DM/DL marks of one hemisphere (side = +1 implanted,
+        -1 other, None = both).  Returns (shift_um, se_um, n_marks).
+        """
+        m = self.hp_marks.dropna(subset=['ap_hp_um', 'ap_series_um'])
+        if side is not None:
+            m = m[m['side'] == side]
+        if not len(m):
+            return np.nan, np.nan, 0
+        w = 1.0 / np.maximum(m['ap_hp_sd_um'].to_numpy(float), 50.0) ** 2
+        delta = m['ap_hp_um'].to_numpy(float) - m['ap_series_um'].to_numpy(float)
+        return (float(np.sum(w * delta) / np.sum(w)),
+                float(np.sqrt(1.0 / np.sum(w))), int(len(m)))
+
+    def _ac_offset(self, side):
+        """
+        AP (in the series) of the section on which the AC appears in this
+        hemisphere, minus the AC's own AP.  Zero unless a separate AC section
+        was marked for the other hemisphere.
+        """
+        key = self.series.get('ac_section') if side == 1 else \
+            (self.series.get('ac_section_other') or self.series.get('ac_section'))
+        row = self.sections[self.sections['key'] == key]
+        ap0 = self.series.get('ac_ap_um')
+        if not len(row) or ap0 is None or not np.isfinite(row['ap_ac_um'].iloc[0]):
+            return 0.0
+        return float(row['ap_ac_um'].iloc[0]) - float(ap0)
+
+    def _anchor_shear(self):
+        """
+        Anchor AP on BOTH landmarks at once, per hemisphere.
+
+        The AC sits deep and already defines the series; the DM/DL marks sit
+        at the brain surface.  If the section plane is tilted away from the
+        atlas plane the two disagree by an offset that grows with depth, so
+        instead of choosing one, interpolate linearly between them:
+
+            ap = ap_series + shift * (1 - dv / ac_dv) - ac_off * (dv / ac_dv)
+
+        At the surface (dv = 0) this lands on the hippocampal-width landmark;
+        at the depth of the AC it lands on the AC.  shift and ac_off are taken
+        per hemisphere, so each side is anchored on its own marks.
+
+        tan(pitch) = (shift + ac_off) / ac_dv is the section plane's tilt
+        away from the atlas plane, about the ML axis, on the same sign
+        convention as ap_calibration (positive = the surface landmark sits
+        anterior of where the AC series puts the section).  The difference between
+        the hemispheres' shifts is an apparent yaw about the DV axis -- but
+        see HP_HEMISPHERE_FIT: at the size it usually takes, that difference
+        is as easily genuine asymmetry as geometry, which is why it is applied
+        as a per-hemisphere anchor and only REPORTED as an angle.
+        """
+        ac_dv = self.series.get('ac_dv_um')
+        if not ac_dv:
+            warnings.warn("ap_anchor='shear' needs ac_dv_um (the depth of the AC "
+                          'below the brain surface) -- falling back to the '
+                          'surface landmark alone')
+            return self._anchor_on_hp()
+        ac_dv = float(ac_dv)
+
+        rows = []
+        self._shear = {}
+        both = self._hp_shift(None)
+        for side in (1, -1):
+            shift, se, n = self._hp_shift(side)
+            fallback = not n
+            if fallback:                  # nothing marked on this side
+                shift, se = both[0], both[1]
+            if not np.isfinite(shift):
+                shift, se = 0.0, np.nan
+            ac_off = self._ac_offset(side)
+            self._shear[side] = (shift, ac_off, ac_dv)
+            rows.append(OrderedDict([
+                ('side', 'implanted' if side == 1 else 'other'),
+                ('n_marks', n), ('from_other_side', fallback),
+                ('hp_shift_um', shift), ('hp_shift_se_um', se),
+                ('ac_offset_um', ac_off),
+                ('pitch_deg', float(np.rad2deg(np.arctan2(shift + ac_off, ac_dv)))),
+            ]))
+        if not np.isfinite(both[0]):
+            warnings.warn("ap_anchor='shear' but no section has a DM/DL mark -- "
+                          'AP left on the anterior commissure')
+            self._shear = {}
+            return
+
+        self.shear = pd.DataFrame(rows)
+        d_shift = self._shear[1][0] - self._shear[-1][0]
+        w_ref = float(self.hp_marks['width_um'].median()) if len(self.hp_marks) else np.nan
+        self.shear.attrs.update(
+            hemisphere_offset_um=d_shift,
+            implied_yaw_deg=float(np.rad2deg(np.arctan2(d_shift, 2 * w_ref)))
+            if np.isfinite(w_ref) and w_ref > 0 else np.nan,
+            note='pitch_deg: section plane vs the atlas plane, about the ML axis. '
+                 'hemisphere_offset_um / implied_yaw_deg are reported, not assumed '
+                 'geometric -- see HP_HEMISPHERE_FIT.')
+        self.ap_shift_um = 0.5 * (self._shear[1][0] + self._shear[-1][0])
+
+        # apply, per point, to everything that carries an ML and a DV
+        if len(self.scars):
+            self.scars['ap_um'] += self.ap_correction(
+                self.scars['ml_um'].to_numpy(float),
+                self.scars['dv_um'].to_numpy(float))
+        for i, r in self.rois.iterrows() if len(self.rois) else []:
+            b = r['boundary']
+            b[:, 1] += self.ap_correction(b[:, 0], b[:, 2])
+            self.rois.at[i, 'ap_um'] = r['ap_um'] + float(self.ap_correction(
+                r['center_ml_um'], r['center_dv_um'])[0])
+        # sections['ap_um'] is left in the section frame on purpose: under
+        # shear a section no longer HAS one AP, it spans a range with depth.
+        # The corrected values are the per-point ones in rois and scars.
+        warnings.warn('AP anchored on both landmarks: hp shift %+.0f / %+.0f um '
+                      '(implanted / other), pitch %+.1f / %+.1f deg'
+                      % (self._shear[1][0], self._shear[-1][0],
+                         self.shear['pitch_deg'].iloc[0],
+                         self.shear['pitch_deg'].iloc[1]))
+
+    def ap_correction(self, ml_um, dv_um):
+        """
+        AP (um) to ADD to a point's section AP to put it in the atlas frame.
+        Zero unless ap_anchor='shear'.  ml_um only picks the hemisphere.
+        """
+        ml = np.atleast_1d(np.asarray(ml_um, float))
+        dv = np.atleast_1d(np.asarray(dv_um, float))
+        out = np.zeros(np.broadcast(ml, dv).shape)
+        for side, (shift, ac_off, ac_dv) in getattr(self, '_shear', {}).items():
+            m = (ml >= 0) if side == 1 else (ml < 0)
+            frac = np.where(np.isfinite(dv), dv / ac_dv, 0.0)
+            out = np.where(m, shift * (1 - frac) - ac_off * frac, out)
+        return out
+
+    def ap_calibration(self, ac_dv_um=None):
+        """
+        Compare the AP of each DM/DL-marked section with the AP the anterior
+        commissure gives it.
+
+        The Hp landmark sits at the brain surface and the AC lies deep, so a
+        section plane tilted away from the atlas plane shows up as a constant
+        offset between the two: offset ~ tan(tilt) * (depth of the AC).  Pass
+        ac_dv_um (or set the series parameter) to turn the offset into an angle.
+        A trend in the offset along the series instead means the AP step per
+        section is off -- the effective thickness, not the angle.
+
+        Returns a DataFrame of the marked sections; the summary is in .attrs
+        (offset_um, offset_sd_um, slope_um_per_section, tilt_deg).
+        """
+        if pd is None:
+            raise ImportError('ap_calibration needs pandas')
+        cols = ['key', 'section_index', 'hp_width_um', 'ap_hp_um', 'ap_hp_sd_um',
+                'ap_ac_um']
+        out = self.sections.dropna(subset=['ap_hp_um', 'ap_ac_um'])[cols].copy()
+        if len(out) == 0:
+            warnings.warn('no section has both a DM/DL mark and an AC-based AP')
+            return out
+        out['offset_um'] = out['ap_hp_um'] - out['ap_ac_um']
+        w = 1.0 / np.maximum(out['ap_hp_sd_um'].to_numpy(float), 50.0) ** 2
+        off = out['offset_um'].to_numpy(float)
+        mean_off = float(np.sum(w * off) / np.sum(w))
+        slope = np.nan
+        if len(out) > 1 and out['section_index'].nunique() > 1:
+            slope = float(np.polyfit(out['section_index'].to_numpy(float), off, 1,
+                                     w=np.sqrt(w))[0])
+        ac_dv = ac_dv_um if ac_dv_um is not None else self.series.get('ac_dv_um')
+        tilt = (float(np.rad2deg(np.arctan2(mean_off, float(ac_dv))))
+                if ac_dv else np.nan)
+        out.attrs.update(offset_um=mean_off,
+                         offset_sd_um=float(np.std(off, ddof=1)) if len(out) > 1 else np.nan,
+                         slope_um_per_section=slope, tilt_deg=tilt,
+                         note='offset = AP from the Hp width - AP from the AC; '
+                              'positive means the surface landmark sits anterior '
+                              'of where the AC series puts the section')
+        return out
 
     # ----------------------------------------------------------- scars ---- #
     def scar_tracks(self, ap_ref='lambda', shared_direction=False):
@@ -602,9 +1143,13 @@ class LHyROIs(object):
             track_length_um   insertion -> tip, compare with 'final depth'
             dap_ddv, dml_ddv  slopes; ap_angle_deg / ml_angle_deg from vertical
                               (+ap = tip anterior of entry, +ml = tip lateral)
-            n_sections, dv_span_um, rms_um
-            worst_section     section whose trace fits worst -- an unticked
-                              'flipped' box or a mis-ordered section shows up here
+            n_sections        distinct sections traced (pieces of one broken
+                              section count once -- they share an AP)
+            n_entries         distinct entries traced, pieces counted separately
+            dv_span_um, rms_um
+            worst_section     entry whose trace fits worst -- an unticked
+                              'flipped' box, a mis-ordered section or a piece
+                              with a badly placed midline shows up here
         AP slopes need the scar traced on >= 2 sections (NaN otherwise).
         """
         ap_col = {'lambda': 'ap_um', 'ac': 'ap_from_ac_um'}[ap_ref]
@@ -629,7 +1174,10 @@ class LHyROIs(object):
         for sh, p in pts.items():
             g = groups[sh]
             c = cents[sh]
-            n_sec = g['key'].nunique()
+            # distinct SECTIONS, not distinct entries: two pieces of one broken
+            # section sit at the same AP and carry no AP information between them
+            n_sec = g['section_index'].nunique()
+            n_traces = g['key'].nunique()
             d = common if shared_direction else fit_dir(p - c)
             if n_sec < 2 and not shared_direction:
                 warnings.warn('shank %s: scar traced on one section only -- no AP '
@@ -657,6 +1205,7 @@ class LHyROIs(object):
                 ('ap_angle_deg', np.rad2deg(np.arctan2(-d[1], d[2])) if ap_ok else np.nan),
                 ('ml_angle_deg', np.rad2deg(np.arctan2(d[0], d[2]))),
                 ('n_sections', n_sec),
+                ('n_entries', n_traces),
                 ('dv_span_um', np.ptp(p[:, 2])),
                 ('rms_um', np.sqrt(np.mean((resid ** 2).sum(1)))),
                 ('worst_section', sec_rms.idxmax()),
@@ -692,9 +1241,17 @@ class LHyROIs(object):
 
     # ------------------------------------------------------------ LHy ----- #
     def _slabs(self, ap_col):
-        """AP half-extent of each reviewed section: half the gap to each neighbour."""
-        rev = self.sections[self.sections['lhy'].notna()].sort_values(ap_col)
-        ap = rev[ap_col].to_numpy(float)
+        """
+        AP half-extent of each reviewed section: half the gap to each
+        neighbour.  Keyed by entry key, but worked out per SECTION -- the
+        pieces of a broken section sit at the same AP and share one slab,
+        rather than looking like neighbours zero microns apart.
+        """
+        rev = self.sections[self.sections['lhy'].notna()]
+        if not len(rev):
+            return {}
+        per = rev.groupby('section_index')[ap_col].first().sort_values()
+        ap = per.to_numpy(float)
         step = abs(float(self.series['section_thickness_um'] or 0)
                    * float(self.series['section_interval'])
                    * float(self.series['ap_scale']))
@@ -704,7 +1261,9 @@ class LHyROIs(object):
             gaps = np.diff(ap)
             lo[0], hi[-1] = step / 2, step / 2
             lo[1:], hi[:-1] = gaps / 2, gaps / 2
-        return dict(zip(rev['key'], zip(ap, lo, hi)))
+        by_index = dict(zip(per.index, zip(ap, lo, hi)))
+        return {k: by_index[i] for k, i in zip(rev['key'], rev['section_index'])
+                if i in by_index}
 
     def distance(self, positions, ap_ref='lambda', mirror=None):
         """
@@ -727,6 +1286,9 @@ class LHyROIs(object):
         if mirror is None:
             mirror = self.implant_sign is None
         ap_col = {'lambda': 'ap_um', 'ac': 'ap_from_ac_um'}[ap_ref]
+        shear = bool(getattr(self, '_shear', None))
+        if shear and ap_col == 'ap_um':
+            ap_col = 'ap_ac_um'       # slabs live in the uncorrected section frame
         pos = np.atleast_2d(np.asarray(positions, float))
         n = len(pos)
         best = np.full(n, np.inf)
@@ -740,12 +1302,18 @@ class LHyROIs(object):
             warnings.warn('no ellipses on sections marked lhy=yes')
         slabs = self._slabs(ap_col)
 
+        # the slabs are section APs; with ap_anchor='shear' the caller's AP is
+        # in the atlas frame, so take the correction back off the query points
+        ap_q = pos[:, 1].copy()
+        if shear:
+            ap_q = ap_q - self.ap_correction(pos[:, 0], pos[:, 2])
+
         for _, r in rois.iterrows():
             geom = self.geoms[r['key']]
             e = self.ann['sections'][r['key']]['ellipses'][r['ellipse']]
             ap_c, lo, hi = slabs[r['key']]
-            gap = np.maximum(0.0, np.maximum((ap_c - lo) - pos[:, 1],
-                                             pos[:, 1] - (ap_c + hi)))
+            gap = np.maximum(0.0, np.maximum((ap_c - lo) - ap_q,
+                                             ap_q - (ap_c + hi)))
             ml = (np.sign(r['center_ml_um']) or 1) * np.abs(pos[:, 0]) if mirror else pos[:, 0]
             d = signed_distance_to_ellipse_um(geom.brain_to_px(ml, pos[:, 2]), e, geom)
             total = np.where(gap > 0, np.sqrt(np.maximum(d, 0) ** 2 + gap ** 2), d)

@@ -49,7 +49,7 @@ import lhy_roi_tools as lrt
 # --------------------------------------------------------------------------- #
 #  FIGURE PARAMS                                                                 #
 # --------------------------------------------------------------------------- #
-LHY_IMPLANT_COLOR = 'xkcd:scarlet'
+LHY_IMPLANT_COLOR = 'xkcd:dark gray'
 LHY_CONTRA_COLOR = 'xkcd:dusty rose'
 LHY_MIRROR_COLOR = 'xkcd:scarlet'
 
@@ -322,9 +322,10 @@ def plot_tracks_and_lhy(rois_by_bird, colors=None, combine='mean_shape',
     # average LHy, one ellipsoid per side
     for side, ell in avg.items():
         X, Y, Z = ellipsoid_surface(ell)
-        ax.plot_surface(X, Y, Z, color=side_colors[side], alpha=lhy_alpha, lw=0,
-                        shade=True, zorder=0)
-        ax.plot([], [], color=side_colors[side], lw=6, alpha=0.5,
+        ax.plot_wireframe(X, Y, Z, color=side_colors[side], lw=0.3, alpha=lhy_alpha)
+        # ax.plot_surface(X, Y, Z, color=side_colors[side], alpha=lhy_alpha, lw=0,
+        #                 shade=True, zorder=0)
+        ax.plot([], [], color=side_colors[side], lw=0.3, alpha=0.5,
                 label=f'LHy {side_names[side]} ({combine}, n={ell["n_birds"]})')
         extent = [np.concatenate([e, g.ravel()]) for e, g in zip(extent, (X, Y, Z))]
 
@@ -347,7 +348,7 @@ def plot_tracks_and_lhy(rois_by_bird, colors=None, combine='mean_shape',
         ax.plot(seg[:, 0], seg[:, 1], seg[:, 2], c=colors[bird], lw=2,
                 ls='--' if flip else '-',
                 label=None if bird in labelled else bird)
-        ax.scatter(*loc[1], color=colors[bird], marker='v', s=20, depthshade=False)
+        # ax.scatter(*loc[1], color=colors[bird], marker='v', s=20, depthshade=False)
         labelled.add(bird)
         if label_tracks:
             ax.text(*seg[0], label + (' (mirrored)' if flip else ''),

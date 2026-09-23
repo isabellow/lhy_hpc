@@ -33,8 +33,8 @@ from spike_video_gui import launch, sort_cells_by_peak_time  # noqa: F401
 #  PARAMETERS                                                                  #
 # --------------------------------------------------------------------------- #
 
-bird = 'LMN88'
-session_id = '260720'
+bird = 'ROS107'
+session_id = '260917'
 root_dir = 'Z:/Isabel/data/lhy_implants/'
 session_dir = f'{root_dir}{bird}/{bird}_{session_id}/'
 
@@ -71,8 +71,8 @@ spike_t_window = 250
 smoothing = None
 
 # phy cluster IDs to plot; None = all rows of aligned_spikes.npy
-cell_ids = None
-# cell_ids = [164, 124, 162, 94, 143, 150, 107]
+# cell_ids = None
+cell_ids = [11, 15, 20, 22, 23, 27, 34, 41, 50, 52, 68, 87, 90, 97, 99, 113, 115, 55, 85, 95, 86, 72, 78, 77, 51]
 
 # indices that sort the rows of aligned_spikes.npy into the desired order;
 # None = keep the order they are stored in
