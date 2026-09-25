@@ -89,8 +89,10 @@ from lhy_roi_gui import launch
 #  PARAMETERS                                                                  #
 # --------------------------------------------------------------------------- #
 
-bird = 'TRQ82'
-hist_folder = 'bad_model'
+bird = 'TRQ82' 
+# bird = 'LMN88'
+hist_folder = 'bad_model' # '20260804_091518_518'
+# hist_folder = '20260804_091518_518'
 hist_root = 'Z:/Isabel/histology/lhy_implants/'
 data_root = 'Z:/Isabel/data/lhy_implants/'
 
@@ -140,6 +142,18 @@ auto_slide_order = True
 # of detritus is an anonymous gap and you have to correct 'lost before' by hand.
 annotate_unimaged = True
 
+# If a slide reports 'the stage positions do not line up with the sections on
+# the overview': the overview's own stage position is not the centre of the
+# overview image (a stitched montage sometimes records its first tile
+# instead), so everything lands offset.  Fixing that automatically is not
+# safe -- sections sit in a regular grid, and a grid maps onto itself under a
+# 180 deg flip and under a one-step shift, so a fitted offset can put
+# sections on the WRONG pieces of tissue while looking like a good fit.
+# Instead: click one section in the inset to place it, then press shift+P to
+# place the rest of that slide from it.  One known section removes the
+# ambiguity.  shift+click in the inset adds a section that has no
+# high-resolution image at all, as a crop of the overview.
+#
 # sections are placed on the overview from the stage coordinates in the nd2
 # metadata.  The stage axes can run either way relative to the image, so the
 # signs are worked out from how well the sections line up with the tissue on
@@ -173,13 +187,26 @@ section_interval = 1
 ap_sign = -1
 
 # anterior commissure reference section as (slide, region), or None to set it
-# in the GUI with 'a'
+# in the GUI with 'a'.  Mark the commissure itself with shift+A on that
+# section to supply ac_dv_um.
 ac_section = None
 
 # AP of the AC relative to lambda, um -- ANT_COM_AP in get_probe_coords_lhy.py
 ac_ap_um = 900
 
-# depth of the AC below the brain surface, um.  Only used to turn the offset
+# hippocampus plateau width, um.  Hippocampus size varies enough between
+# birds to bias the width -> AP inversion badly, so by default each bird's own
+# size is fitted from its own DM/DL marks ('auto').  That needs marks reaching
+# the steep part of the curve -- roughly, sections where the hippocampus is
+# under ~0.6 x its widest; otherwise it falls back to the atlas value and
+# tells you.  None = always the atlas; a number = force that value.
+hp_L_um = 'auto'
+
+# depth of the AC below the brain surface, um.  Normally leave this None and
+# mark the commissure in the GUI with shift+A instead (one point per
+# hemisphere, in the middle of the commissure, on the AC reference section):
+# the depth is then measured for you, in the same DV convention as every
+# other annotation.  A value here is only used when there is no mark.  Only used to turn the offset
 # between the two AP estimates (AC vs hippocampal width) into a section-angle
 # estimate in rois.ap_calibration().  None = report the offset only.
 ac_dv_um = None
@@ -192,7 +219,7 @@ ac_dv_um = None
 #           surface, and every annotation is corrected in proportion to its
 #           own depth, per hemisphere.  This is the one to use for comparing
 #           AP across birds.  Needs ac_dv_um; falls back to 'hp' without it.
-ap_anchor = 'ac'
+ap_anchor = 'shear'
 
 # the AC in the OTHER hemisphere, if slicing yaw puts it on a different
 # section: (slide, region), or None to use ac_section for both.  With
@@ -253,6 +280,7 @@ if __name__ == '__main__':
            ap_sign=ap_sign,
            ac_section=ac_section,
            ac_ap_um=ac_ap_um,
+           hp_L_um=hp_L_um,
            ac_section_other=ac_section_other,
            ac_dv_um=ac_dv_um,
            ap_anchor=ap_anchor,

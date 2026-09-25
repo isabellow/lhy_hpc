@@ -92,10 +92,15 @@ w &nbsp; DM/DL boundary at the surface (hippocampal width -> AP)<br>
 Del &nbsp; selected ellipse, else the scar under the cursor<br>
 [ / ] &nbsp; move section earlier / later on its slide<br>
 x &nbsp; flipped &nbsp;&nbsp; a &nbsp; AC reference = this section<br>
+shift+A &nbsp; mark the anterior commissure (one per hemisphere): its depth<br>
+&nbsp;&nbsp;&nbsp;below the surface is ac_dv_um, needed for the section angle<br>
 d &nbsp; not a section (detritus): out of the AP count, not a lost section<br>
 g &nbsp; another piece of the SAME section as the entry before it<br>
 &nbsp;&nbsp;&nbsp;(one AP step for the group; annotate each piece separately)<br>
 shift+G &nbsp; split it off again<br>
+click inset &nbsp; place this section by hand &nbsp; shift+click &nbsp; add a<br>
+&nbsp;&nbsp;&nbsp;section that has no high-res image &nbsp; shift+P &nbsp; place the rest<br>
+&nbsp;&nbsp;&nbsp;of the slide from the one you just placed<br>
 c &nbsp; annotate this section on the slide overview instead (for the part<br>
 &nbsp;&nbsp;&nbsp;the high-res scan missed); c again returns to the scan<br>
 v &nbsp; copy midline/surface/ellipses from previous section<br>
@@ -248,6 +253,45 @@ def _assign(cost):
         return np.array(rows), np.array(cols)
 
 
+def place_from_anchor(sections, anchor_key, anchor_xy, blobs_px, px_um,
+                      axis_signs=None):
+    """
+    Place every section on a slide from the stage coordinates, using one
+    section whose position is already known as the origin.
+
+    This is the fallback for slides where the overview's own stage position
+    is not the centre of the overview, so the usual calculation lands
+    everything in the wrong place.  Fitting that offset automatically is not
+    safe: sections are laid out in a regular grid, and a grid maps onto
+    itself under a 180 degree flip and under a one-step shift, so a wrong fit
+    can look as good as the right one and would quietly put sections on the
+    wrong pieces of tissue.  One known section removes the ambiguity, and the
+    stage coordinates supply the rest.
+
+    Returns {key: (x_px, y_px)}, signs.
+    """
+    stage0 = sections.get(anchor_key, {}).get('stage')
+    keys = [k for k in sections if k != 'slide' and sections[k].get('stage')]
+    if stage0 is None or not keys:
+        return {}, axis_signs
+    anchor_xy = np.asarray(anchor_xy, float)
+    delta = np.array([np.asarray(sections[k]['stage'], float) -
+                      np.asarray(stage0, float) for k in keys])
+    combos = [axis_signs] if axis_signs else [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+    if len(combos) > 1 and len(blobs_px):
+        best = None
+        for signs in combos:                  # the anchor is pinned, so the
+            pred = anchor_xy + delta * np.asarray(signs, float) / px_um
+            d = np.sqrt(((pred[:, None, :] - blobs_px[None, :, :]) ** 2).sum(-1))
+            score = float(np.median(d.min(1)))   # signs are now testable
+            if best is None or score < best[0]:
+                best = (score, signs)
+        combos = [best[1]]
+    signs = combos[0] or (1, 1)
+    pred = anchor_xy + delta * np.asarray(signs, float) / px_um
+    return {k: tuple(p) for k, p in zip(keys, pred)}, signs
+
+
 def locate_sections_on_slide(slide, sections, blobs_px, px_um, shape,
                              axis_signs=None):
     """
@@ -257,6 +301,13 @@ def locate_sections_on_slide(slide, sections, blobs_px, px_um, shape,
     The stage axes may run either way relative to the image, so all four sign
     combinations are tried and scored against the tissue blobs found on the
     overview; the best is kept if it lines up well enough.
+
+    This assumes the overview's own stage position is the centre of the
+    overview image.  That is not always true -- a stitched montage may record
+    the stage of its first tile instead, offsetting every section by the same
+    amount -- and the offset cannot be fitted safely, because a grid of
+    sections maps onto itself under a flip or a one-step shift.  When it
+    fails, place one section by hand and press P: see place_from_anchor.
 
     sections  : {key: dict(stage=(x_um, y_um), shape=(h, w), px=(x, y))} for the
                 sections on this slide, plus the slide's own 'stage' under the
@@ -297,8 +348,10 @@ def locate_sections_on_slide(slide, sections, blobs_px, px_um, shape,
     resid, signs, pred = best
     if resid > 0.35 * spacing:
         warnings.warn('slide %s: the stage positions do not line up with the '
-                      'sections on the overview (median offset %.0f um) -- click '
-                      'in the inset to place sections by hand, or set '
+                      'sections on the overview (median offset %.0f um).  Click '
+                      'one section in the inset to place it, then press P to '
+                      'place the rest of the slide from it; shift+click adds a '
+                      'section that has no high-resolution image.  Or set '
                       'slide_axis_signs' % (slide, resid * px_um))
         return {}, None, resid * px_um
     return ({k: tuple(p) for k, p in zip(keys, pred)}, signs, resid * px_um)
@@ -556,9 +609,12 @@ def apply_slide_layout(ann, slides, auto_order=True, only_slide=None,
                 secs[key]['slide_xy_source'] = 'auto'
                 slot_key[slot] = key
 
-        # a crop that has since been imaged properly steps aside
+        # a crop that has since been imaged properly steps aside -- but one
+        # added by hand (shift+click on the inset) is left alone: the user put
+        # it there precisely because the automatic placement was wrong
         for key in crops:
-            if key not in slot_key.values():
+            if key not in slot_key.values() \
+                    and secs[key].get('slide_xy_source') != 'manual':
                 if not secs[key].get('superseded'):
                     secs[key]['superseded'] = True
                     if verbose:
@@ -825,7 +881,7 @@ class LHyROIGUI(QtWidgets.QMainWindow):
         self.inset_width_px = int(inset_width_px)
         self.shank_labels = list(shank_labels)
         for s in ann['sections'].values():           # labels already in the file
-            for scar in s.get('scars', []):
+            for scar in (s.get('scars') or []):
                 if scar.get('shank') not in self.shank_labels:
                     self.shank_labels.append(scar.get('shank'))
 
@@ -848,6 +904,7 @@ class LHyROIGUI(QtWidgets.QMainWindow):
         self.selected = None
         self.scar_rois = []
         self.dmdl_items = []
+        self.ac_items = []
 
         self._build_ui(keep_levels)
         QtWidgets.QApplication.instance().installEventFilter(self)
@@ -1214,15 +1271,139 @@ class LHyROIGUI(QtWidgets.QMainWindow):
         self.inset_gaps.setData(gaps)
         self._layout_inset()
 
-    def _inset_click(self, scene_pos):
-        """Place the current section on the slide by hand."""
+    def place_slide_from_here(self):
+        """
+        Place the rest of this slide from the stage coordinates, using the
+        current section -- which you have just clicked into position -- as the
+        origin.  For slides where the automatic placement lands everything in
+        the wrong place because the overview's stage position is not its
+        centre.
+        """
+        if self.slides is None:
+            self.flash('no slide overview images', error=True)
+            return
+        s = self.sec()
+        slide = int(s['slide'])
+        if not s.get('slide_xy_px'):
+            self.flash('click this section in the inset first, then press P',
+                       error=True)
+            return
+        info = self.slides.info(slide)
+        if info is None:
+            self.flash('no overview image for slide %d' % slide, error=True)
+            return
+        anchor = self.keys[self.cur]
+        entries = {}
+        for k, sec in self.ann['sections'].items():
+            if int(sec['slide']) != slide or sec.get('superseded') \
+                    or sec.get('source') == 'slide_crop':
+                continue
+            h = self.slides.header(sec['file'])
+            if h['stage']:
+                entries[k] = h
+        if anchor not in entries:
+            self.flash('%s has no stage position in its nd2 metadata' % anchor,
+                       error=True)
+            return
+        pos, signs = place_from_anchor(entries, anchor, s['slide_xy_px'],
+                                       info['blobs'], info['px_um'],
+                                       self.slides.axis_signs)
+        n_on = 0
+        for k, xy in pos.items():
+            self.ann['sections'][k]['slide_xy_px'] = [float(xy[0]), float(xy[1])]
+            self.ann['sections'][k]['slide_xy_source'] = \
+                'manual' if k == anchor else 'anchored'
+            if len(info['blobs']) and np.sqrt(
+                    ((info['blobs'] - np.asarray(xy, float)) ** 2).sum(1)).min() \
+                    < 0.35 * max(info['shape']) / 8.0:
+                n_on += 1
+        # hand-set order wins, so only redo the order if there is none
+        self._mark_dirty()
+        apply_slide_layout(self.ann, self.slides,
+                           auto_order=self.auto_slide_order, only_slide=slide,
+                           annotate_unimaged=self.annotate_unimaged)
+        self._reorder()
+        self._load_items()
+        self._update_inset()
+        self.flash('placed %d section(s) on slide %d from %s (axis signs %s); '
+                   '%d landed on tissue -- check the inset, o undoes it'
+                   % (len(pos), slide, anchor, signs, n_on))
+
+    def _inset_click(self, scene_pos, add=False):
+        """Place the current section on the slide by hand, or add a new one."""
         p = self.inset_vb.mapSceneToView(scene_pos)
+        if add:
+            return self.add_unimaged_section((float(p.x()), float(p.y())))
         self.sec()['slide_xy_px'] = [float(p.x()), float(p.y())]
         self.sec()['slide_xy_source'] = 'manual'
         self._mark_dirty()
         self._update_inset()
         self.flash('placed %s on slide %d by hand'
                    % (self.keys[self.cur], self.sec()['slide']))
+
+    def add_unimaged_section(self, xy):
+        """
+        Add a section that has no high-resolution image, from a click on the
+        slide inset: it becomes a crop of the overview, annotated at ~8 um/px.
+
+        This is the manual version of what apply_slide_layout does for an
+        empty slot, for the slides where the sections could not be placed
+        automatically and so the empty slots were never worked out.  The new
+        section goes in straight after the one on screen; use [ / ] to move
+        it if that is not where it belongs.
+        """
+        if self.slides is None:
+            self.flash('no slide overview images', error=True)
+            return
+        slide = int(self.sec()['slide'])
+        info = self.slides.info(slide)
+        if info is None:
+            self.flash('no overview image for slide %d' % slide, error=True)
+            return
+        xy = np.asarray(xy, float)
+        blobs, boxes = info['blobs'], info['boxes']
+        if len(blobs):                      # snap to the piece of tissue clicked
+            c = int(np.argmin(((blobs - xy) ** 2).sum(1)))
+            box = np.asarray(boxes[c], float)
+            xy = np.asarray(blobs[c], float)
+        else:                               # no tissue found: a default box
+            half = 0.05 * max(info['shape'])
+            box = np.array([xy[0] - half, xy[1] - half, xy[0] + half, xy[1] + half])
+        pad = 0.08 * max(box[2] - box[0], box[3] - box[1])
+        crop = [float(box[0] - pad), float(box[1] - pad),
+                float(box[2] + pad), float(box[3] + pad)]
+
+        for k, s in self.ann['sections'].items():   # already have this one?
+            if int(s['slide']) == slide and s.get('source') == 'slide_crop' \
+                    and s.get('slide_xy_px') is not None \
+                    and np.hypot(*(np.asarray(s['slide_xy_px'], float) - xy)) < pad:
+                self.flash('there is already a section here (%s)' % k, error=True)
+                return self.goto(self.keys.index(k)) if k in self.keys else None
+
+        n = 1 + max([int(s['region']) - 1000 for s in self.ann['sections'].values()
+                     if int(s['slide']) == slide and 1000 <= int(s['region']) < 2000]
+                    or [0])
+        key = 'slide%02d_hand%03d' % (slide, n)
+        order = int(self.sec()['slide_order']) + 1
+        for s in self.ann['sections'].values():     # make room for it
+            if int(s['slide']) == slide and int(s['slide_order']) >= order:
+                s['slide_order'] = int(s['slide_order']) + 1
+                s['order_source'] = 'manual'
+        sec = lrt.empty_section(
+            dict(file=info['file'], slide=slide, region=1000 + n,
+                 source='slide_crop', crop_px=crop), order)
+        sec['pixel_size_um'] = [info['px_um'], info['px_um']]
+        sec['image_shape'] = [int(info['shape'][0]), int(info['shape'][1])]
+        sec['slide_xy_px'] = [float(xy[0]), float(xy[1])]
+        sec['slide_xy_source'] = 'manual'
+        sec['order_source'] = 'manual'
+        self.ann['sections'][key] = sec
+        self._mark_dirty()
+        self._reorder()
+        self.goto(self.keys.index(key))
+        self.flash('added %s: a section with no high-resolution image, on a crop '
+                   'of the overview (%.1f um/px).  [ / ] moves it in the order; '
+                   'Del removes it' % (key, info['px_um']))
 
     def relocate_on_slide(self, reorder=False):
         """
@@ -1320,7 +1501,7 @@ class LHyROIGUI(QtWidgets.QMainWindow):
     # ----------------------------------------------------- overlay items --
     def _all_items(self):
         items = ([self.midline_roi, self.surface_roi] + self.midline_labels
-                 + self.ellipse_rois + self.dmdl_items)
+                 + self.ellipse_rois + self.dmdl_items + self.ac_items)
         for roi in self.scar_rois:
             items += [roi, roi._text]
         return [it for it in items if it is not None]
@@ -1339,12 +1520,14 @@ class LHyROIGUI(QtWidgets.QMainWindow):
             self._make_midline(*s['midline_px'])
         if s.get('surface_px'):
             self._make_surface(s['surface_px'])
-        for e in s.get('ellipses', []):
+        for e in (s.get('ellipses') or []):
             self._make_ellipse(e)
-        for scar in s.get('scars', []):
+        for scar in (s.get('scars') or []):
             self._make_scar(scar['points_px'], scar.get('shank', 'A'))
-        for xy in s.get('dmdl_px', []):
+        for xy in (s.get('dmdl_px') or []):
             self._make_dmdl(xy)
+        for xy in (s.get('ac_px') or []):
+            self._make_ac(xy)
         self._set_overlays_visible(self.overlays_visible)
         self._geom = None
 
@@ -1360,6 +1543,8 @@ class LHyROIGUI(QtWidgets.QMainWindow):
                       for r in self.scar_rois]
         s['dmdl_px'] = [[float(t.pos().x()), float(t.pos().y())]
                         for t in self.dmdl_items]
+        s['ac_px'] = [[float(t.pos().x()), float(t.pos().y())]
+                      for t in self.ac_items]
 
     def _changed(self, *_, implant=False):
         self._pull_items()
@@ -1452,6 +1637,41 @@ class LHyROIGUI(QtWidgets.QMainWindow):
         self._changed()
         self.flash('put it where the DM/DL boundary meets the dorsal surface; '
                    'its distance from the midline is the hippocampal width')
+
+    # anterior commissure, for the AC depth (ac_dv_um)
+    def _make_ac(self, xy):
+        t = pg.TargetItem(pos=list(xy), size=13, symbol='o',
+                          pen=pg.mkPen((255, 190, 90), width=2), label='AC',
+                          labelOpts=dict(color=(255, 190, 90)))
+        t.setZValue(23)
+        t.sigPositionChangeFinished.connect(self._changed)
+        self.vb.addItem(t)
+        self.ac_items.append(t)
+        return t
+
+    def add_ac_point(self):
+        if self.ann['series'].get('ac_section') not in (None, self.keys[self.cur]) \
+                and not self.sec().get('ac_px'):
+            self.flash('note: this is not the AC reference section (that is %s)'
+                       % self.ann['series']['ac_section'])
+        self._make_ac(self._cursor_or_center())
+        self._changed()
+        d = self._ac_readout()
+        self.flash('anterior commissure marked%s -- put one per hemisphere, in the '
+                   'middle of the commissure; its depth below the dorsal surface '
+                   'is the lever arm for the section angle'
+                   % ('' if d is None else ' at %.0f um below the surface' % d[1]))
+
+    def _ac_readout(self):
+        geom = self._geometry()
+        if not geom or not self.ac_items:
+            return None
+        ml, dv = geom.px_to_brain(np.array([[t.pos().x(), t.pos().y()]
+                                            for t in self.ac_items], float))
+        good = np.isfinite(dv)
+        if not good.any():
+            return None
+        return float(np.mean(np.abs(ml[good]))), float(np.mean(dv[good]))
 
     def _hp_readout(self):
         geom = self._geometry()
@@ -1588,16 +1808,18 @@ class LHyROIGUI(QtWidgets.QMainWindow):
                 self.vb.removeItem(roi._text)
                 self._changed(implant=True)
                 return
-        if self.dmdl_items and self.mouse_xy is not None:
-            (x0, x1), _ = self.vb.viewRange()
-            d = [np.hypot(t.pos().x() - self.mouse_xy[0], t.pos().y() - self.mouse_xy[1])
-                 for t in self.dmdl_items]
-            j = int(np.argmin(d))
-            if d[j] < 0.02 * abs(x1 - x0):
-                self.vb.removeItem(self.dmdl_items.pop(j))
-                self._changed()
-                return
-        self.flash('nothing to delete (click an ellipse, or hover a scar / DM-DL mark)')
+        for items in (self.dmdl_items, self.ac_items):
+            if items and self.mouse_xy is not None:
+                (x0, x1), _ = self.vb.viewRange()
+                d = [np.hypot(t.pos().x() - self.mouse_xy[0],
+                              t.pos().y() - self.mouse_xy[1]) for t in items]
+                j = int(np.argmin(d))
+                if d[j] < 0.02 * abs(x1 - x0):
+                    self.vb.removeItem(items.pop(j))
+                    self._changed()
+                    return
+        self.flash('nothing to delete (click an ellipse, or hover a scar / '
+                   'DM-DL / AC mark)')
 
     def copy_previous(self):
         for j in range(self.cur - 1, -1, -1):
@@ -1898,6 +2120,10 @@ class LHyROIGUI(QtWidgets.QMainWindow):
             self.set_discarded()
         elif txt == 'c':
             self.add_lowres_companion()
+        elif txt == 'P':
+            self.place_slide_from_here()
+        elif txt == 'A':
+            self.add_ac_point()
         elif txt == 'g':
             self.group_with_previous()
         elif txt == 'G':
@@ -1945,7 +2171,9 @@ class LHyROIGUI(QtWidgets.QMainWindow):
             return
         if self.inset_vb.isVisible() and \
                 self.inset_vb.sceneBoundingRect().contains(ev.scenePos()):
-            self._inset_click(ev.scenePos())
+            mods = QtWidgets.QApplication.keyboardModifiers()
+            self._inset_click(ev.scenePos(),
+                              add=bool(mods & _qt('ShiftModifier')))
             ev.accept()
             return
         if not self.drawing:
@@ -2003,6 +2231,8 @@ class LHyROIGUI(QtWidgets.QMainWindow):
             extra += ' scar:' + ''.join(sorted({sc['shank'] for sc in s['scars']}))
         if s.get('dmdl_px'):
             extra += ' Hp'
+        if s.get('ac_px'):
+            extra += ' ACd'
         ac = '  [AC]' if self.ann['series'].get('ac_section') == k else ''
         gap = '  (+%d lost)' % s['gap_before'] if s.get('gap_before') else ''
         return '%s  s%02d #%-2d r%03d %s %s%s%s%s' % (
@@ -2144,6 +2374,9 @@ class LHyROIGUI(QtWidgets.QMainWindow):
         if hp is not None:
             parts.append('Hp %5.0f -> AP %s' % (
                 hp[0], 'n/a' if not np.isfinite(hp[1]) else '%+.0f+-%.0f' % (hp[1], hp[2])))
+        acd = self._ac_readout()
+        if acd is not None:
+            parts.append('AC depth %5.0f' % acd[1])
         if s.get('discarded'):
             parts.append('NOT A SECTION')
         else:
@@ -2249,6 +2482,7 @@ def launch(bird, hist_dir,
            section_interval=None,
            ap_sign=None,
            ac_section=None,
+           hp_L_um='auto',
            ac_section_other=None,
            ac_ap_um=None,
            ac_dv_um=None,
@@ -2281,6 +2515,7 @@ def launch(bird, hist_dir,
     series = OrderedDict(section_thickness_um=section_thickness_um,
                          section_interval=section_interval, ap_sign=ap_sign,
                          ac_section=ac_section, ac_ap_um=ac_ap_um,
+                         hp_L_um=hp_L_um,
                          ac_section_other=ac_section_other,
                          ac_dv_um=ac_dv_um, ap_anchor=ap_anchor,
                          implant_side=implant_side, inplane_scale=inplane_scale)

@@ -79,6 +79,21 @@ Order of operations:
     data_dict[bird][session]['barcode_dict']
         adds: active_cache_frac, shuff_avg_cache, cache_modulated
 
+8. collect_lhy_positions()   [optional; needs histology annotations]
+    -> anatomy/lhy_boundaries.py
+    -> needs: 'all_sessions', 'preprocessed_data' (step 1),
+            'keep_cells' (step 1b),
+            'ephys_id' + 'ks_folder' + 'depth' (step 3)
+    -> needs: {bird}_lhy_rois.json from the annotation GUI
+
+    Channel and cell positions are rebuilt from the annotated scar track, 
+    so they and the LHy boundaries come from the same histology. 
+    Birds with no annotations are skipped.
+
+    data_dict[bird]['lhy_dvs']
+    data_dict[bird][session]['lhy_dist_ch'], ['in_lhy_ch'], (by channel, negative = in LHy)
+                              ['lhy_dist'], ['in_lhy'] (by cell)
+
 Params:
 -------
 overwrite : bool
@@ -109,6 +124,7 @@ import make_data_dict
 import format_waveform_data
 import waveform_analysis
 import get_probe_coords_lhy
+import lhy_boundaries
 import format_behavior_data
 import format_chronic_stim
 import helpers
@@ -826,7 +842,8 @@ def collect_cache_shuffle_activity(data_dict, bird_ids, root_dir, overwrite=Fals
 # Build or update the data dictionary
 # ---------------------------------------------------------------------------
 def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
-                                    get_stim_data=False, overwrite=False,
+                                    get_stim_data=False, get_lhy_bounds=True,
+                                    overwrite=False,
                                     drop_excluded_shanks=True):
     '''
     Full pipeline
@@ -877,13 +894,18 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
         data_dict = collect_cache_shuffle_activity(data_dict, bird_ids, ROOT_DIR, overwrite=overwrite)
         np.save(DATA_FILE, data_dict)
 
+    if get_lhy_bounds:
+        data_dict = lhy_boundaries.collect_lhy_positions(data_dict, bird_ids, ROOT_DIR, 
+                                                            tol_um=lhy_tol_um, overwrite=overwrite)
+        np.save(DATA_FILE, data_dict)
+
     print(f"\nDone. Saved to {DATA_FILE}")
     return data_dict
 
 
 if __name__ == "__main__":
     # Example: add a couple of new birds to an existing (or new) struct
-    build_or_update_session_data(new_bird_ids=['ROS107'], overwrite=False)
+    build_or_update_session_data(new_bird_ids=None, overwrite=False)
 
 #     # Example: just pick up new sessions for birds already in the dict
 #     build_or_update_session_data(new_bird_ids=None)

@@ -254,9 +254,9 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
     head_angle : sequence of 2 floats
         [roll_deg, pitch_deg] measured during implant
         pitch_deg is the beak bar angle in degrees below horizontal.
-    probe_angle_rad : float
-        probe tilt toward the midline during surgery
-        (radians, positive = tip toward the midline).
+    probe_angle_rad : float or ndarray, shape (n_shanks,)
+        probe tilt toward the midline during surgery per shank
+        (radians, positive = tip toward the midline). A scalar is broadcast.
         Pass 0.0 for a vertically mounted probe.
     shank_dist : float
         known, fixed distance between shanks (um)
@@ -271,6 +271,8 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
     # data params
     n_shanks = raw_tip_coords.shape[0]
     final_depth = parse_per_shank(final_depth, n_shanks, name='final_depth')
+    probe_angle_rad = parse_per_shank(probe_angle_rad, n_shanks,
+                                      name='probe_angle_rad')
     if exclude is None:
         exclude = np.zeros(n_shanks, dtype=bool)
     has_hist = ~np.isnan(raw_tip_coords[:, 0]) & ~np.isnan(raw_tip_coords[:, 1]) & ~exclude
@@ -312,15 +314,16 @@ def convert_tip_coords(raw_tip_coords, insert_coords, final_depth, head_angle,
         # convert roll to radians
         roll_rad = np.deg2rad(roll_deg)
 
-        # account for the probe's tilt
-        v_stereo = rotate_AP(probe_angle_rad) @ np.asarray([0., 0., 1.])
-        v_brain = probe_dir_brain(hist_rad, roll_rad, v_stereo=v_stereo)  # [AP, ML, DV]
-        u_ap, u_ml, u_dv = v_brain
-
         # step along the track from the entry point: tip = entry + travel * v
-        abs_ml[missing] = insert_coords[missing, 0] + final_depth[missing] * u_ml
-        abs_ap[missing] = insert_coords[missing, 1] + final_depth[missing] * u_ap
-        abs_dv[missing] = final_depth[missing] * u_dv
+        # one shank at a time, since the probe angle is per shank too and
+        # rotate_AP only takes a single angle
+        for s in np.where(missing)[0]:
+            v_stereo = rotate_AP(probe_angle_rad[s]) @ np.asarray([0., 0., 1.])
+            u_ap, u_ml, u_dv = probe_dir_brain(hist_rad, roll_rad,
+                                               v_stereo=v_stereo)  # [AP, ML, DV]
+            abs_ml[s] = insert_coords[s, 0] + final_depth[s] * u_ml
+            abs_ap[s] = insert_coords[s, 1] + final_depth[s] * u_ap
+            abs_dv[s] = final_depth[s] * u_dv
 
         # for birds with histology, check against estimates from intended coords
         if np.any(has_hist):

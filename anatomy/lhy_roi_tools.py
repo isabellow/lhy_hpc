@@ -25,6 +25,11 @@ The JSON stores raw image geometry only, in full-resolution pixels:
     surface_px  : [[x, y], ...] polyline along the dorsal brain surface
     ellipses    : [{center_px, axes_px, angle_deg}, ...]
     scars       : [{shank, points_px: [[x, y], ...]}, ...]  probe-scar traces
+    ac_px       : [[x, y], ...] the anterior commissure on the AC reference
+                  section, one point per hemisphere.  Its depth below the
+                  dorsal surface is the lever arm ac_dv_um that turns the
+                  AC-vs-hippocampus offset into a section-plane angle, so it
+                  is measured the same way as every other DV in this file
     dmdl_px     : [[x, y], ...] the DM/DL boundary where it meets the dorsal
                   surface, one point per hemisphere; its distance from the
                   midline is the hippocampal width, which gives an AP estimate
@@ -113,6 +118,8 @@ DEFAULT_SERIES_PARAMS = OrderedDict([
                                      # on a different section (slicing yaw)
     ('ac_ap_um', None),              # AP of that reference, relative to lambda
     ('implant_side', None),          # 'right' / 'left' image side, None = from scars
+    ('hp_L_um', 'auto'),             # hippocampus plateau width: 'auto' = fit this
+                                     # bird, None = atlas, or a number in um
     ('ap_anchor', 'ac'),             # 'ac', 'hp', or 'shear' (both, by depth)
     ('ac_dv_um', None),              # depth of the AC below the surface, for the angle estimate
     ('inplane_scale', 1.0),          # multiply ML/DV by this (tissue shrinkage)
@@ -198,6 +205,8 @@ def empty_section(info, slide_order):
         ('ellipses', []),
         ('scars', []),
         ('dmdl_px', []),               # DM/DL boundary at the surface, one point per side
+        ('ac_px', []),                 # anterior commissure, one point per hemisphere:
+                                       # its depth below the surface is ac_dv_um
         ('notes', ''),
     ])
 
@@ -408,6 +417,10 @@ def migrate_annotation(ann):
         s.setdefault('piece_group', None)
         s.setdefault('companion_of', None)
         s.setdefault('dmdl_px', [])
+        s.setdefault('ac_px', [])
+        for field in ('dmdl_px', 'ac_px', 'ellipses', 'scars'):
+            if s.get(field) is None:       # written as null by an earlier version
+                s[field] = []
         s.setdefault('slide_xy_px', None)
         s.setdefault('slide_xy_source', None)
         s.setdefault('order_source', 'default')
@@ -499,6 +512,102 @@ HP_WIDTH_FIT = dict(L=2285.8, ap0=3682.6, k=1001.8, resid_sd=156.4,
 # reading a yaw angle off it would not be.
 HP_HEMISPHERE_FIT = dict(offset_sd=73.0, offset_mean_abs=58.0, offset_max=172.0,
                          paired_sections=403, n_brains=11, se_per_brain=65.0)
+
+# a per-bird hippocampus size is only used when the marks pin it down this
+# well, and only if the answer is anatomically plausible
+HP_SIZE_FIT_MAX_SE = 200.0        # um
+HP_SIZE_RANGE = (1200.0, 3000.0)  # um
+HP_SIZE_FIT_MAX_MIN_WIDTH = 0.62  # the narrowest mark must be under this x L
+
+
+def fit_hp_size(section_index, width_um, step_um=100.0, fit=None):
+    """
+    Fit this bird's OWN hippocampal width curve to its DM/DL marks.
+
+    Hippocampus size varies a lot between birds -- enough that inverting a
+    bird's widths through the atlas plateau L can bias its AP badly, and in
+    an AP-dependent way.  Here the atlas curve SHAPE is kept (k fixed) but the
+    plateau width L is fitted to this bird, along with an AP scale factor that
+    doubles as a check on the section thickness.
+
+    Only the shape of width against section index is used -- the AP origin is
+    free -- so the fitted L does not depend on the anterior commissure
+    reference, and the AC-vs-hippocampus offset stays a meaningful diagnostic.
+
+    This only works when the marks reach the steep part of the curve.  Marks
+    confined to the plateau cannot separate "small hippocampus" from "sections
+    closer together in AP", and the fit says so through its standard errors.
+
+    Returns dict(ok, L_um, L_se_um, scale, scale_se, step_um, rms_um, n, why).
+    """
+    f = dict(fit or HP_WIDTH_FIT)
+    i = np.asarray(section_index, float)
+    w = np.asarray(width_um, float)
+    good = np.isfinite(i) & np.isfinite(w) & (w > 0)
+    i, w = i[good], w[good]
+    out = dict(ok=False, L_um=f['L'], L_se_um=np.nan, scale=np.nan,
+               scale_se=np.nan, step_um=np.nan, rms_um=np.nan, n=int(len(w)),
+               why='')
+    if len(w) < 6:
+        out['why'] = 'only %d marks: need at least 6' % len(w)
+        return out
+    try:
+        from scipy.optimize import curve_fit
+    except ImportError:
+        out['why'] = 'scipy not installed'
+        return out
+
+    k = f['k']
+
+    def model(idx, L, scale, c):
+        return L * np.exp(-np.exp((-idx * scale * step_um + c) / k))
+
+    try:
+        p, cov = curve_fit(model, i, w, p0=[f['L'], 1.0, 0.0], maxfev=40000)
+        se = np.sqrt(np.diag(cov))
+    except Exception as err:                       # pragma: no cover
+        out['why'] = 'fit failed (%s)' % err
+        return out
+    L, scale, c = p
+    out.update(L_um=float(L), L_se_um=float(se[0]), scale=float(scale),
+               scale_se=float(se[1]), step_um=float(scale * step_um),
+               rms_um=float(np.sqrt(np.mean((w - model(i, *p)) ** 2))))
+    if not np.isfinite(se[0]) or se[0] > HP_SIZE_FIT_MAX_SE:
+        out['why'] = ('the marks do not pin the hippocampus size down '
+                      '(L = %.0f +- %.0f um): they need to reach the steep part '
+                      'of the curve, below about %.0f um wide'
+                      % (L, se[0], 0.55 * f['L']))
+        out['L_um'] = f['L']
+        return out
+    if not (HP_SIZE_RANGE[0] <= L <= HP_SIZE_RANGE[1]):
+        out['why'] = 'fitted hippocampus size %.0f um is not plausible' % L
+        out['L_um'] = f['L']
+        return out
+    # The standard error alone is not enough: marks confined to the plateau
+    # can still return a confident-looking L that is biased low, and using it
+    # makes AP worse than the atlas value.  Demand that the marks actually
+    # reach the steep part of the curve.
+    if w.min() > HP_SIZE_FIT_MAX_MIN_WIDTH * L:
+        out['why'] = ('the narrowest mark (%.0f um) is still on the plateau: to '
+                      'fit this bird\'s hippocampus size, mark sections where it '
+                      'is under about %.0f um wide'
+                      % (w.min(), HP_SIZE_FIT_MAX_MIN_WIDTH * L))
+        out['L_um'] = f['L']
+        return out
+    out['ok'] = True
+    out['why'] = 'fitted from %d marks (widths %.0f - %.0f um)' % (
+        len(w), w.min(), w.max())
+    return out
+
+
+def bird_hp_fit(L_um, fit=None):
+    """The atlas width fit with this bird's own plateau width substituted."""
+    f = dict(fit or HP_WIDTH_FIT)
+    f['L'] = float(L_um)
+    # fitting L removes the between-bird size spread from the residual, so
+    # what is left is the within-bird scatter
+    f['resid_sd'] = float(f.get('within_bird_sd', f['resid_sd']))
+    return f
 
 
 def ap_to_hp_width(ap_um, fit=None):
@@ -816,7 +925,7 @@ class LHyROIs(object):
         self.geoms = {}
         self.discarded = []
         pieces = piece_labels(ann)
-        sec_rows, roi_rows, scar_rows, hp_rows = [], [], [], []
+        sec_rows, roi_rows, scar_rows, hp_rows, ac_rows = [], [], [], [], []
         for key, s in ann['sections'].items():
             if s.get('superseded'):
                 if s.get('ellipses') or s.get('scars') or s.get('dmdl_px'):
@@ -843,26 +952,26 @@ class LHyROIs(object):
             except ValueError as err:
                 why = str(err)
             self.geoms[key] = geom
-            width = ap_hp = sd_hp = np.nan
+            width = np.nan
             if geom is not None and s.get('dmdl_px'):
                 ml, _ = geom.px_to_brain(np.asarray(s['dmdl_px'], float))
                 width = float(np.mean(np.abs(ml)))
-                with warnings.catch_warnings():
-                    warnings.simplefilter('ignore')
-                    ap_hp = float(hp_width_to_ap(width))
-                    sd_hp = float(hp_ap_sd(width))
-                    for m in ml:            # one constraint per hemisphere
-                        hp_rows.append(dict(
-                            key=key, section_index=s['section_index'],
-                            side=1 if m >= 0 else -1, ml_um=float(m),
-                            width_um=abs(float(m)),
-                            ap_hp_um=float(hp_width_to_ap(abs(m))),
-                            ap_hp_sd_um=float(hp_ap_sd(abs(m))),
-                            ap_series_um=ap_abs))
+                for m in ml:                # one constraint per hemisphere
+                    hp_rows.append(dict(
+                        key=key, section_index=s['section_index'],
+                        side=1 if m >= 0 else -1, ml_um=float(m),
+                        width_um=abs(float(m)), ap_hp_um=np.nan,
+                        ap_hp_sd_um=np.nan, ap_series_um=ap_abs))
+            if geom is not None and s.get('ac_px'):
+                aml, adv = geom.px_to_brain(np.asarray(s['ac_px'], float))
+                for m, d in zip(aml, adv):
+                    ac_rows.append(dict(key=key, section_index=s['section_index'],
+                                        side=1 if m >= 0 else -1,
+                                        ml_um=float(m), dv_um=float(d)))
             piece, n_pieces = pieces.get(key, (1, 1))
             sec_rows.append(dict(
                 key=key, slide=s['slide'], region=s['region'],
-                hp_width_um=width, ap_hp_um=ap_hp, ap_hp_sd_um=sd_hp,
+                hp_width_um=width, ap_hp_um=np.nan, ap_hp_sd_um=np.nan,
                 piece_group=s.get('piece_group'), piece=piece, n_pieces=n_pieces,
                 slide_order=s['slide_order'], gap_before=s['gap_before'],
                 flipped=bool(s['flipped']), section_index=s['section_index'],
@@ -914,6 +1023,9 @@ class LHyROIs(object):
         self.hp_marks = pd.DataFrame(hp_rows, columns=[
             'key', 'section_index', 'side', 'ml_um', 'width_um', 'ap_hp_um',
             'ap_hp_sd_um', 'ap_series_um'])
+        self.ac_marks = pd.DataFrame(ac_rows, columns=[
+            'key', 'section_index', 'side', 'ml_um', 'dv_um'])
+        self._calibrate_hp()
 
         self.sections['ap_ac_um'] = self.sections['ap_um']
         self.ap_shift_um = 0.0
@@ -952,6 +1064,78 @@ class LHyROIs(object):
                       '%d section(s)' % (shift, len(marked)))
 
     # ------------------------------------------------------- shear anchor -- #
+    # ------------------------------------------------- hippocampus size -- #
+    def _calibrate_hp(self):
+        """
+        Choose the hippocampal width curve for this bird, then turn every
+        DM/DL mark into an AP estimate with it.
+
+        series['hp_L_um'] is 'auto' to fit the bird's own plateau width from
+        its own marks, None to use the atlas value, or a number to force one.
+        The fit needs marks reaching the steep part of the curve; when they do
+        not, it falls back to the atlas and says so.
+        """
+        want = self.series.get('hp_L_um', 'auto')
+        step = abs(float(self.series.get('section_thickness_um') or 100.0)
+                   * float(self.series.get('section_interval') or 1))
+        self.hp_fit_info = dict(ok=False, why='atlas value used', L_um=HP_WIDTH_FIT['L'])
+        if isinstance(want, str) and want.lower() == 'auto':
+            w = self.sections.dropna(subset=['hp_width_um', 'section_index'])
+            self.hp_fit_info = fit_hp_size(w['section_index'], w['hp_width_um'], step)
+            if self.hp_fit_info['ok']:
+                warnings.warn(
+                    "hippocampus size fitted to this bird: L = %.0f +- %.0f um "
+                    "(atlas %.0f); the section step it implies is %.0f um, set as "
+                    "%.0f -- %s"
+                    % (self.hp_fit_info['L_um'], self.hp_fit_info['L_se_um'],
+                       HP_WIDTH_FIT['L'], self.hp_fit_info['step_um'], step,
+                       self.hp_fit_info['why']))
+            elif self.hp_fit_info['why']:
+                warnings.warn('using the atlas hippocampus size (L = %.0f um): %s'
+                              % (HP_WIDTH_FIT['L'], self.hp_fit_info['why']))
+        elif want is not None:
+            self.hp_fit_info = dict(ok=True, L_um=float(want), L_se_um=np.nan,
+                                    scale=np.nan, scale_se=np.nan, step_um=np.nan,
+                                    rms_um=np.nan, n=0, why='set by hand')
+        self.hp_L_um = float(self.hp_fit_info['L_um'])
+        self.hp_fit = (bird_hp_fit(self.hp_L_um)
+                       if self.hp_fit_info['ok'] else dict(HP_WIDTH_FIT))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            for df, col in ((self.sections, 'hp_width_um'),
+                            (self.hp_marks, 'width_um')):
+                if not len(df):
+                    continue
+                w = df[col].to_numpy(float)
+                df['ap_hp_um'] = hp_width_to_ap(w, self.hp_fit)
+                df['ap_hp_sd_um'] = hp_ap_sd(w, self.hp_fit)
+        if len(self.sections):
+            bad = (self.sections['hp_width_um'].notna()
+                   & self.sections['ap_hp_um'].isna())
+            if bad.any():
+                warnings.warn('%d section(s) have a hippocampal width at or above '
+                              'the fitted plateau (%.0f um), so no AP can be read '
+                              'from them: %s' % (int(bad.sum()), self.hp_L_um,
+                                                 list(self.sections.loc[bad, 'key'])))
+
+    def ac_depth_um(self, side=None):
+        """
+        Depth of the anterior commissure below the brain surface (um), from
+        the AC marks -- the lever arm ac_dv_um.  Falls back to the series
+        value, then to NaN.  `side` is +1 (implanted) / -1 / None (both).
+        """
+        m = self.ac_marks
+        if len(m):
+            if side is not None and (m['side'] == side).any():
+                m = m[m['side'] == side]
+            d = m['dv_um'].to_numpy(float)
+            d = d[np.isfinite(d)]
+            if len(d):
+                return float(np.mean(d))
+        v = self.series.get('ac_dv_um')
+        return float(v) if v else np.nan
+
     def _hp_shift(self, side=None):
         """
         Weighted mean of (AP from the hippocampal width) - (AP from the AC
@@ -997,22 +1181,32 @@ class LHyROIs(object):
         at the depth of the AC it lands on the AC.  shift and ac_off are taken
         per hemisphere, so each side is anchored on its own marks.
 
-        tan(pitch) = (shift + ac_off) / ac_dv is the section plane's tilt
-        away from the atlas plane, about the ML axis, on the same sign
-        convention as ap_calibration (positive = the surface landmark sits
-        anterior of where the AC series puts the section).  The difference between
+        tan(pitch) = (shift + ac_off) / ac_dv expresses the AC-vs-hippocampus
+        offset as an angle, on the same sign convention as ap_calibration
+        (positive = the surface landmark sits anterior of where the AC series
+        puts the section).
+
+        Read it as a section-plane tilt only if you believe the offset is
+        geometric.  A misidentified AC section, or a wrong ac_ap_um, produces
+        exactly the same constant offset, and the two landmarks alone cannot
+        tell them apart -- but they call for opposite treatments: a shift of
+        the whole series (ap_anchor='hp') rather than a shear.  A useful check
+        is whether shearing makes the probe angles of several birds agree
+        better or worse; if worse, the offset is probably not a tilt.
+
+        The difference between the
         the hemispheres' shifts is an apparent yaw about the DV axis -- but
         see HP_HEMISPHERE_FIT: at the size it usually takes, that difference
         is as easily genuine asymmetry as geometry, which is why it is applied
         as a per-hemisphere anchor and only REPORTED as an angle.
         """
-        ac_dv = self.series.get('ac_dv_um')
-        if not ac_dv:
-            warnings.warn("ap_anchor='shear' needs ac_dv_um (the depth of the AC "
-                          'below the brain surface) -- falling back to the '
-                          'surface landmark alone')
+        ac_dv = self.ac_depth_um()
+        if not np.isfinite(ac_dv) or ac_dv <= 0:
+            warnings.warn("ap_anchor='shear' needs the depth of the AC below the "
+                          'brain surface: mark the commissure with A on the AC '
+                          'reference section, or set ac_dv_um -- falling back to '
+                          'the surface landmark alone')
             return self._anchor_on_hp()
-        ac_dv = float(ac_dv)
 
         rows = []
         self._shear = {}
@@ -1025,13 +1219,17 @@ class LHyROIs(object):
             if not np.isfinite(shift):
                 shift, se = 0.0, np.nan
             ac_off = self._ac_offset(side)
-            self._shear[side] = (shift, ac_off, ac_dv)
+            dv_side = self.ac_depth_um(side)
+            if not np.isfinite(dv_side) or dv_side <= 0:
+                dv_side = ac_dv
+            self._shear[side] = (shift, ac_off, dv_side)
             rows.append(OrderedDict([
                 ('side', 'implanted' if side == 1 else 'other'),
                 ('n_marks', n), ('from_other_side', fallback),
                 ('hp_shift_um', shift), ('hp_shift_se_um', se),
                 ('ac_offset_um', ac_off),
-                ('pitch_deg', float(np.rad2deg(np.arctan2(shift + ac_off, ac_dv)))),
+                ('ac_dv_um', dv_side),
+                ('pitch_deg', float(np.rad2deg(np.arctan2(shift + ac_off, dv_side)))),
             ]))
         if not np.isfinite(both[0]):
             warnings.warn("ap_anchor='shear' but no section has a DM/DL mark -- "
