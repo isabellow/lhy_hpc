@@ -913,6 +913,12 @@ def get_expectation_status(count_data, seed_struct, event_onsets, event_site_idx
     For each event, classify the site at that event as either:
         empty | novel bait | expected seed.
 
+    Whether a bait is novel is judged against EVERY site interaction in
+    count_data (checks, caches and retrievals), not only against the events
+    passed in.  So a retrieval of a bait the bird had already opened the site
+    on (e.g. checked, or cached into) is an expected seed, however the caller
+    splits its events by type.
+
     Params
     ------
     count_data, seed_struct : as loaded by load_behavior_data
@@ -934,7 +940,8 @@ def get_expectation_status(count_data, seed_struct, event_onsets, event_site_idx
         SITE_EMPTY | SITE_BAITED | SITE_CACHED, SITE_UNKNOWN where the site is
         outside the arena or the event was dropped by discovered_bait
     is_first : bool array, shape (n_events,)
-        first-encounter flag, returned so callers can report it
+        True where the event is at or before the bird's first interaction of
+        any kind with that site, returned so callers can report it
     '''
     #check inputs
     if discovered_bait not in ('cached', 'drop'):
@@ -948,7 +955,6 @@ def get_expectation_status(count_data, seed_struct, event_onsets, event_site_idx
     n_sites = timeline['n_sites']
     onsets = np.asarray(event_onsets).astype(int)
     sites = np.asarray(event_site_idx).astype(int)
-    max_frame = np.max(onsets)
 
     # get baits vs. cached seeds
     n_baited, n_cached = get_site_seed_counts(
@@ -959,10 +965,14 @@ def get_expectation_status(count_data, seed_struct, event_onsets, event_site_idx
     has_baited = known & (n_baited > 0)
     has_seed = known & ((n_baited > 0) | (n_cached > 0))
 
-    # was this the first encounter?
-    first = np.full(n_sites, max_frame+1000, dtype=np.int64)
-    np.minimum.at(first, sites, onsets)
-    is_first = onsets == first[sites]
+    # was this the first time the bird ever interacted with this site?
+    # consider all interactions, not just the event-type in question
+    all_int_start = np.asarray(count_data['newSite']).astype(int)
+    all_int_site = np.asarray(count_data['siteNum']).astype(int) - 1   # siteNum is 1-indexed
+    first = np.full(n_sites, np.max(all_int_start)+10000, dtype=np.int64)
+    np.minimum.at(first, all_int_site, all_int_start)
+    is_first = np.zeros(onsets.shape[0], dtype=bool)
+    is_first = onsets <= first[sites]
 
     # set the status of each interaction
     status = np.full(onsets.shape[0], SITE_UNKNOWN, dtype=int)

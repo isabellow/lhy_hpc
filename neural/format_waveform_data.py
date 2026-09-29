@@ -72,6 +72,15 @@ def sort_wf_by_channel(session_dir, waveform_struct,
     else:
         return mean_waveforms_sorted_reordered, max_site_sorted, max_idx
 
+def get_custom_sort_idx(data_dir):
+    '''
+    Native channel index at each position of the custom (Intan header) order,
+    so native_array[sort_idx] is in custom order. Same ordering as sort_wf_by_channel.
+    '''
+    intan_info = load_matlab_data.loadmat_sbx(f"{data_dir}intan_info.mat")['header']
+    custom_order = [amp_ch.__dict__['custom_order'] for amp_ch in intan_info['amplifier_channels']]
+    return np.argsort(np.asarray(custom_order).astype(int))
+
 def get_spike_times(session_dir, ks_dir='kilosort4', only_good=True):
     ''' get the spike times for each (good) unit '''
     phy_info = pd.read_csv(f"{session_dir}{ks_dir}cluster_group.tsv", sep='\t')

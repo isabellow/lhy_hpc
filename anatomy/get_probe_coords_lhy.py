@@ -503,10 +503,10 @@ def get_channel_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, tip_coor
     Returns
     -------
     ch_pos_brain : nparray, shape (n_channels_total, 3)
-        ML, AP, DV brain coords for every channel on the probe
+        ML, AP, DV brain coords for every channel on the probe, in custom channel order
         (NaN for any channel excluded from kilosort4 or on an excluded shank)
     ch_shank_idx : nparray, shape (n_channels_total,), int
-        shank index for each channel (-1 for excluded channels)
+        shank index for each channel in custom order (-1 for excluded channels)
     cell_pos : nparray, shape (n_cells, 3)
         brain coords of each good cell's best channel
     cell_shank_idx : nparray, shape (n_cells,), int
@@ -543,6 +543,13 @@ def get_channel_cell_pos(session_dir, ks_dir, ephys_dir, insert_coords, tip_coor
     # account for excluded channels
     ch_pos_brain = remap_by_channel_map(ch_pos_brain, channel_map, n_channels_total)
     ch_shank_idx = remap_by_channel_map(ch_shank_idx, channel_map, n_channels_total, fill_value=-1).astype(int)
+
+    # native -> custom channel order, to match wf_ch_idx and ch_names
+    sort_idx = format_waveform_data.get_custom_sort_idx(ephys_dir)
+    ch_pos_brain = ch_pos_brain[sort_idx]
+    ch_shank_idx = ch_shank_idx[sort_idx]
+
+    # which channels were excluded?
     excluded_idx = np.where(ch_shank_idx < 0)[0]
     excluded_names = [ch_names[i] for i in excluded_idx]
     print(f"  broken/excluded channels ({len(excluded_names)}): {excluded_names}")
@@ -678,6 +685,7 @@ def flag_excluded_cells(data_dict, session_info_file, root_dir,
             ch_shank_idx = get_channel_shank(ch_pos_probe, n_shanks)
             ch_shank_idx = remap_by_channel_map(ch_shank_idx, channel_map, len(ch_names),
                                                 fill_value=-1).astype(int)
+            ch_shank_idx = ch_shank_idx[format_waveform_data.get_custom_sort_idx(ephys_dir)]
             cell_shank_idx = ch_shank_idx[wf_ch_idx]
 
             # waveform_props/cell_pos are in waveform struct order, but
@@ -948,7 +956,7 @@ def save_cell_positions(data_dict, root_dir):
     Cell-level fields ('cell_pos', 'shank_idx') are masked by 'keep_cells'
     from flag_excluded_cells, so cells on excluded shanks never get saved.
     Channel-level fields ('channel_pos', 'channel_shank_idx') cover the whole
-    probe, since the stim step indexes them by raw channel number.
+    probe in custom channel order, matching the stim step's worm_ch_idx.
     '''
     for bird in data_dict.keys():
         print(f'\nlocalizing cells for {bird}')

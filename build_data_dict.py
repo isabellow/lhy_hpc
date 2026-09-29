@@ -141,6 +141,9 @@ SESSION_INFO_FILE = f"{ROOT_DIR}good_sessions.xlsx"
 ARENA_DIR = "C:/Users/Isabel/Documents/code/il_rig_control/arena_alignment/"
 ARENA_ITEMS_FILE = "arena_items_2.mat"
 
+# only needed for get_lhy_bounds
+lhy_tol_um = 50.0
+
 
 # ---------------------------------------------------------------------------
 # Step 1: create the dict / add birds & sessions
@@ -306,8 +309,6 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
                 sess_idx += 1
 
     # per-bird concatenation across that bird's sessions
-    # (this was previously assigned outside the bird loop, so every bird's
-    #  props landed on whichever bird happened to be last)
     for bird in bird_ids:
         bird_props = [data_dict[bird][s]['waveform_props']
                       for s in data_dict[bird]['all_sessions']

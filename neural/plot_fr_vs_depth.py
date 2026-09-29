@@ -30,7 +30,7 @@ session_info_file = f"{root_dir}good_sessions.xlsx"
 title_size = 14
 axis_label = 12
 tick_label = 9
-ylims = [6510, 4490]
+ylims = [6610, 4390]
 alpha_pts = 0.8
 size_pts = 6
 
@@ -252,5 +252,5 @@ for grp in col_groups:
            label, color='xkcd:scarlet', ha='center', va='top',
            fontsize=axis_label, transform=f.transFigure)
 
-f.savefig(f'{save_dir}/width_by_depth_fr.png', dpi=400, bbox_inches='tight')
+f.savefig(f'{save_dir}width_by_depth_fr.png', dpi=400, bbox_inches='tight')
 plt.show()

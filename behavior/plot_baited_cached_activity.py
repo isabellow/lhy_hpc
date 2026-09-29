@@ -56,10 +56,10 @@ data_file = f"{root_dir}good_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
 
 ''' Data params '''
-bird = 'ROS107'  # update as needed
+bird = 'TRQ82'  # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
-# session_list = ['260831']
+# session_list = ['260810', '260819', '260821', '260825']
 fps = 50  # Hz
 dt = 1 / fps
 
@@ -91,10 +91,10 @@ use_init_counts = True
 min_events_per_group = 2
 
 # max events plotted in the raster
-max_events_per_group = 100
+max_events_per_group = 200
 
 # sort by duration or chronological?
-sort_by_duration = True
+sort_by_duration = False
 
 # skip plotting a session if any group has fewer than min_events_per_group.
 skip_too_few_events = False
@@ -105,9 +105,9 @@ skip_too_few_events = False
 # Set thresh_t_window to wider than the event window to assess general unit 
 # properties, not response to the event itself.
 subsample_drift = True
-subsample_metric = 'firing rate'   # 'firing rate' | 'amplitude'
+subsample_metric = 'amplitude'   # 'firing rate' | 'amplitude'
 subsample_thresh = 0.7             # keep events >= this x the session average
-thresh_t_window = 5*60.0           # seconds centered on the event
+thresh_t_window = 1*60.0           # seconds centered on the event
 
 ''' Amplitude panel params '''
 # mean KS spike amplitude within the event's raster window, 
@@ -274,9 +274,9 @@ def draw_group_labels(fig, ax, renderer, groups_sorted, block_edges, colors,
 
 ''' Define/create the save folder '''
 if sort_by_duration:
-    save_folder = f"{save_figs_dir}/{bird}/baited_cached_activity/"
+    save_folder = f"{save_figs_dir}{bird}/baited_cached_activity/"
 else:
-    save_folder = f"{save_figs_dir}/{bird}/baited_cached_activity/chronological/"
+    save_folder = f"{save_figs_dir}{bird}/baited_cached_activity/chronological/"
 os.makedirs(save_folder, exist_ok=True)
 
 ''' Plot check/retrieval responses for each session '''
@@ -295,7 +295,7 @@ for session_id in behavior_sessions:
     avg_firing_rate = 10 ** data_dict[bird][session_id]['waveform_props'][2]
 
     ''' Label cells by their KS cluster ID '''
-    all_ids = cluster_ids_for_session(data_dict, bird, session_id, root_dir)
+    all_ids = np.load(f"{data_dir}aligned_spikes_ids.npy")
 
     ''' Filter cells — one mask applied to every per-cell array '''
     keep_cells, _ = filter_cells(data_dict, bird, session_id, n_cells_raw,
@@ -687,7 +687,7 @@ for session_id in behavior_sessions:
                    f'(baseline {avg_fr_session[c_idx]} Hz)',
                    fontsize=title_size, y=0.95)
 
-        f.savefig(f'{save_folder}/{session_id}_check_retrieve_cell{cell_id}.png',
+        f.savefig(f'{save_folder}{session_id}_check_retrieve_cell{cell_id}.png',
                   dpi=400, bbox_inches='tight')
 
     plt.close(f)
