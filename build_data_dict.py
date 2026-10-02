@@ -129,6 +129,7 @@ import format_behavior_data
 import format_chronic_stim
 import helpers
 import neural_analysis
+import spike_amplitudes
 
 # ---------------------------------------------------------------------------
 # Set root paths
@@ -143,6 +144,9 @@ ARENA_ITEMS_FILE = "arena_items_2.mat"
 
 # only needed for get_lhy_bounds
 lhy_tol_um = 50.0
+
+# video frame rate, for the spike_amplitudes frame conventions
+WF_FPS = 50
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +276,22 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
             n_cells = mean_waveforms.shape[0]
             wf_ch_idx = np.asarray([ch_names.index(ch) for ch in wf_channels])
 
+            # units getSessionWaveforms.m skipped (no spikes found for the ID)
+            # have an all-NaN waveform; they get nan properties, and are left
+            # out of the clustering
+            best_wf = mean_waveforms[np.arange(n_cells), wf_ch_idx]
+            no_wf = ~np.all(np.isfinite(best_wf), axis=1)
+            if no_wf.any():
+                ids = np.asarray(waveform_struct['goodIDs']).astype(int).ravel()[no_wf]
+                n_spk = np.asarray(waveform_struct['nSpikes']).ravel()[no_wf]
+                print(f'  WARNING {bird}_{session_id}: {int(no_wf.sum())}/{n_cells} units have '
+                      f'no mean waveform: cluster IDs {ids}, nSpikes {n_spk}')
+
             # collect waveform properties
-            fr = waveform_struct['meanRate']
-            log_fr = np.log10(fr)
+            fr = np.asarray(waveform_struct['meanRate'], dtype=float).ravel()
+            with np.errstate(divide='ignore'):
+                log_fr = np.log10(fr)
+            log_fr[~np.isfinite(log_fr)] = np.nan       # 0 Hz -> nan, not -inf
             width = np.zeros(n_cells)
             asymm = np.zeros(n_cells)
             for wf_idx in range(n_cells):
@@ -291,7 +308,90 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
                 print(f'  skipping {bird}_{session_id}: keep_cells is stale '
                       f'(re-run flag_excluded_cells with overwrite=True)')
                 continue
+
+            # Every row of waveformStruct is a unit in goodIDs order (all units,
+            # or only 'good' ones if getSessionWaveforms ran with only_good).
+            # get_keep_mask checks length only, so also check that the cells it
+            # keeps are the ones the dict thinks it is keeping, by cluster ID.
+            unit_ids = np.asarray(waveform_struct['goodIDs']).astype(int).ravel()
+            if unit_ids.size != n_cells:
+                print(f'  skipping {bird}_{session_id}: goodIDs ({unit_ids.size}) and '
+                      f'waveFormsMean ({n_cells}) disagree')
+                continue
+            dict_ids = data_dict[bird][session_id].get('cluster_ids')
+            if dict_ids is not None:
+                dict_ids = np.asarray(dict_ids).astype(int).ravel()
+                if not (np.array_equal(dict_ids, unit_ids[keep])
+                        or np.array_equal(dict_ids, unit_ids)):
+                    print(f'  skipping {bird}_{session_id}: cluster IDs in waveformStruct '
+                          f"don't match the dict's cluster_ids (only_good / curation "
+                          f'mismatch? re-run flag_excluded_cells or getSessionWaveforms)')
+                    continue
             data_dict[bird][session_id]['waveform_props'] = waveform_props[:, keep]
+
+            # v2 features: polarity-aware shape + spatial footprint (KS channel
+            # order and positions), and amplitude-based stability. Stored
+            # separately so 'waveform_props' rows (asymm, width, log_fr) and
+            # everything downstream that indexes them are unchanged.
+            ks_path = f"{session_dir}{ks_dir}"
+            # All v2 features are computed in KS channel order (rows of
+            # channel_positions.npy); custom probe order never enters. Shanks
+            # use the same rule as flag_excluded_cells, so the spatial features
+            # and the keep mask agree on which shank a channel belongs to.
+            wfs_ks, ch_pos, chan_map = waveform_analysis.ks_channel_waveforms(waveform_struct, ks_path)
+            n_shanks = int(data_dict[bird].get('n_shanks', 1))
+            ks_shank = get_probe_coords_lhy.get_channel_shank(ch_pos, n_shanks)
+            feats = waveform_analysis.compute_unit_features(wfs_ks, ch_pos, shank=ks_shank)
+
+            # the v2 peak channel in each convention, and how it compares with
+            # max_site (MATLAB: whole 4 ms window; relocated to a sorted channel
+            # by load_wf_data), which is what the keep mask and cell_pos use
+            n_ch_native = len(ch_names)
+            native_to_custom = np.argsort(format_waveform_data.get_custom_sort_idx(ephys_dir))
+            shank_native = np.full(n_ch_native, -1)
+            shank_native[chan_map] = ks_shank
+            pk_ks = feats['peak_ch_ks']
+            has_pk = np.isfinite(pk_ks)
+            pk_native = np.full(n_cells, -1)
+            pk_native[has_pk] = chan_map[pk_ks[has_pk].astype(int)]
+            max_site_native = np.asarray(waveform_struct['max_site']).astype(int).ravel() - 1
+            feats['peak_ch_native'] = pk_native.astype(float)
+            feats['peak_ch_custom'] = np.where(has_pk, native_to_custom[pk_native], -1).astype(float)
+            feats['peak_matches_max_site'] = (pk_native == max_site_native).astype(float)
+            feats['peak_shank_mismatch'] = (has_pk & (shank_native[pk_native] !=
+                                                      shank_native[max_site_native])).astype(float)
+            n_diff = int(np.sum(has_pk & (pk_native != max_site_native)))
+            n_shank = int(feats['peak_shank_mismatch'].sum())
+            if n_diff:
+                print(f'  {bird}_{session_id}: v2 peak channel differs from max_site for '
+                      f'{n_diff}/{n_cells} cells ({n_shank} on a different shank)')
+
+            # stability over the behavior session, via spike_amplitudes (per-spike
+            # KS files are loaded full length and cells picked by cluster ID)
+            data_dir = f"{session_dir}behavior_data/"
+            frame_file = f"{data_dir}frame_times.npy"
+            if os.path.isfile(frame_file):
+                n_frames = np.squeeze(np.load(frame_file)).size
+                amp_data = spike_amplitudes.load_spike_amplitudes(
+                    session_dir, data_dir, ks_dir, unit_ids, n_frames, fps=WF_FPS)
+                no_spk = [uid for uid, (fr, _) in zip(unit_ids, amp_data) if fr.size == 0]
+                if no_spk:
+                    print(f'  WARNING {bird}_{session_id}: {len(no_spk)} units have no '
+                          f'in-session spikes (re-curated in phy after getSessionWaveforms?): '
+                          f'{no_spk[:10]}')
+                stab = waveform_analysis.stability_for_units(amp_data, n_frames, 1 / WF_FPS)
+            else:
+                print(f'  {bird}_{session_id}: no frame_times.npy, stability left as nan')
+                stab = {k: np.full(n_cells, np.nan) for k in
+                        ['chunk_s', 'mean_rate', 'stable_rate', 'frac_stable', 'presence_ratio',
+                         'rate_amp_rho', 'amp_drop']}
+                stab['chunks'] = [None] * n_cells
+            chunks = stab.pop('chunks')
+            feats.update(stab)
+            feats['cluster_id'] = unit_ids.astype(float)
+            wf_feat = {k: np.asarray(v)[keep] for k, v in feats.items()}
+            wf_feat['stability_chunks'] = [chunks[i] for i in np.arange(n_cells)[keep]]
+            data_dict[bird][session_id]['wf_features'] = wf_feat
 
     # re-cluster excitatory/inhibitory across ALL sessions any time new data is added
     all_waveform_props = []
@@ -906,7 +1006,7 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
 
 if __name__ == "__main__":
     # Example: add a couple of new birds to an existing (or new) struct
-    build_or_update_session_data(new_bird_ids=None, overwrite=False)
+    build_or_update_session_data(new_bird_ids=None, overwrite=True)
 
 #     # Example: just pick up new sessions for birds already in the dict
 #     build_or_update_session_data(new_bird_ids=None)

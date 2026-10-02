@@ -1499,19 +1499,28 @@ class LHyROIGUI(QtWidgets.QMainWindow):
         self.flash('every section has been reviewed')
 
     # ----------------------------------------------------- overlay items --
+    #: every per-section overlay list. _clear_items empties all of them, so a
+    #: new overlay type only has to be named here to be cleaned up properly.
+    #: Leaving one out silently leaks items across sections: they stay in the
+    #: list after being taken off the ViewBox, get re-removed on every later
+    #: section change (Qt then warns "item's scene (0x0) is different from
+    #: this scene"), and _pull_items writes them into whatever section is open.
+    ITEM_LISTS = ('midline_labels', 'ellipse_rois', 'scar_rois',
+                  'dmdl_items', 'ac_items')
+
     def _all_items(self):
-        items = ([self.midline_roi, self.surface_roi] + self.midline_labels
-                 + self.ellipse_rois + self.dmdl_items + self.ac_items)
-        for roi in self.scar_rois:
-            items += [roi, roi._text]
+        items = [self.midline_roi, self.surface_roi]
+        for name in self.ITEM_LISTS:
+            items += list(getattr(self, name))
+        items += [roi._text for roi in self.scar_rois]
         return [it for it in items if it is not None]
 
     def _clear_items(self):
         for item in self._all_items():
             self.vb.removeItem(item)
         self.midline_roi = self.surface_roi = self.selected = None
-        self.midline_labels, self.ellipse_rois, self.scar_rois = [], [], []
-        self.dmdl_items = []
+        for name in self.ITEM_LISTS:
+            setattr(self, name, [])
 
     def _load_items(self):
         self._clear_items()

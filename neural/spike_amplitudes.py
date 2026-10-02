@@ -5,10 +5,12 @@ The panel shows mean spike amplitude per trial, normalised to the unit's
 session median, so a unit drifting off the probe is visible as a fall in the
 trace rather than something you have to infer from a thinning raster.
 
-Nothing here filters anything: the amplitude window overlaps the response
+The panel itself filters nothing: the amplitude window overlaps the response
 being plotted, which is fine ONLY because no trial is discarded on the
-strength of it.  See the note in trial_amplitudes before reusing these
-numbers to select trials.
+strength of it.  select_trials_by_drift does discard trials, so it measures
+in a much wider window and against the unit's well-recorded amplitude
+(reference_amplitude), the same reference waveform_analysis.unit_stability
+uses to decide when a unit is on the probe.
 
 Frame conventions match event_psth.py: frames are video frames, indexing the
 columns of aligned_spikes.npy.
@@ -129,12 +131,87 @@ def trial_amplitudes(spike_frames, amps, align_frames, half_width,
     return amp_trial, n_spikes
 
 
+# Defaults for the well-recorded reference amplitude. Shared by
+# select_trials_by_drift and waveform_analysis.unit_stability, so that
+# "drifted" means the same thing for trial selection and cell classification.
+REF_CHUNK_S = 60.           # minimum chunk length, s
+REF_TARGET_SPIKES = 15      # sparse units get chunks long enough for ~this many spikes
+REF_MIN_SPIKES = 5          # chunks with fewer spikes have no amplitude
+REF_PCT = 90                # reference = this percentile of chunk medians
+
+
+def chunk_amplitudes(spike_frames, amps, n_frames, dt, chunk_s=REF_CHUNK_S,
+                     min_spikes=REF_MIN_SPIKES, target_spikes=REF_TARGET_SPIKES):
+    '''
+    Spike count and raw median amplitude in equal, back-to-back chunks that
+    tile the session: trial_amplitudes run with the chunks as "trials".
+
+    Chunk length is at least chunk_s, and longer for sparse units, so that a
+    chunk holds ~target_spikes spikes at the unit's mean rate (otherwise a
+    0.05 Hz unit has too few spikes to measure amplitude almost everywhere).
+    The session is split into equal chunks as close to that length as
+    possible; windows are odd-width (centre +/- half) as trial_amplitudes
+    expects, so at most one frame per chunk goes unused.
+
+    Params
+    ------
+    spike_frames, amps : one entry of load_spike_amplitudes output
+    n_frames : int     frames in the session
+    dt : float         s per frame
+
+    Returns
+    -------
+    dict with
+      centers : int array, chunk centres in frames
+      half : int         chunk half-width in frames
+      dur : float array  chunk durations, s
+      med_amp : float array, raw median amplitude (nan below min_spikes)
+      counts : int array, spikes per chunk
+      chunk_s : float    chunk length used, s
+    '''
+    n_spk = np.asarray(spike_frames).size
+    if n_spk:
+        chunk_s = max(chunk_s, target_spikes * n_frames * dt / n_spk)
+    chunk_s = min(chunk_s, n_frames * dt)
+    n_chunks = max(int(round(n_frames * dt / chunk_s)), 1)
+    width = n_frames // n_chunks
+    width -= (width % 2 == 0)
+    half = max((width - 1) // 2, 1)
+    width = 2 * half + 1
+    centers = half + width * np.arange(n_chunks)
+    lo = np.clip(centers - half, 0, n_frames)
+    hi = np.clip(centers + half + 1, 0, n_frames)
+    dur = np.maximum(hi - lo, 1) * dt
+
+    # ref=1.0 -> raw, un-normalised medians
+    med, counts = trial_amplitudes(spike_frames, amps, centers, half, ref=1.0,
+                                   min_spikes=min_spikes, stat='median')
+    return dict(centers=centers, half=half, dur=dur, med_amp=med,
+                counts=counts, chunk_s=width * dt)
+
+
+def reference_amplitude(spike_frames, amps, n_frames, dt, ref_pct=REF_PCT,
+                        **chunk_kw):
+    '''
+    The unit's amplitude when it is well recorded: the ref_pct percentile of
+    its chunk medians (chunk_amplitudes). Unlike the session median, this is
+    not dragged down when the unit spends part of the session drifting off
+    the probe. nan if no chunk had enough spikes to measure.
+    '''
+    med = chunk_amplitudes(spike_frames, amps, n_frames, dt, **chunk_kw)['med_amp']
+    return float(np.nanpercentile(med, ref_pct)) if np.isfinite(med).any() else np.nan
+
+
 def select_trials_by_drift(spike_fr, align_frames, dt, metric, thresh,
-                           t_window, amp_data=None, min_spikes=1):
+                           t_window, amp_data=None, min_spikes=1,
+                           amp_ref='stable', ref_pct=REF_PCT):
     '''
     Per-cell trial mask: True where the unit's local firing rate or spike
     amplitude, measured in a window centered on the trial, is at least
-    `thresh` times its session average.
+    `thresh` times a reference: the session mean rate for 'firing rate', and
+    for 'amplitude' the unit's well-recorded amplitude (reference_amplitude,
+    the same reference unit_stability uses), so thresh plays the role of
+    unit_stability's amp_frac.
 
     Meant to be applied before the tuning curves are computed -- a trial
     where the unit looks like it has drifted off the probe should not feed
@@ -161,6 +238,13 @@ def select_trials_by_drift(spike_fr, align_frames, dt, metric, thresh,
     min_spikes : int
         metric='amplitude' only -- trials with fewer spikes in the window
         have no measurement and are dropped rather than kept on no evidence
+    amp_ref : 'stable' | 'median'
+        metric='amplitude' only. 'stable' (default) measures against
+        reference_amplitude; 'median' against the session median, the
+        previous behaviour, which is dragged down for a unit that drifts
+        off for much of the session and so lets drifted trials through.
+        Units too sparse for a stable reference fall back to the median.
+    ref_pct : percentile of chunk medians used by amp_ref='stable'
 
     Returns
     -------
@@ -187,10 +271,18 @@ def select_trials_by_drift(spike_fr, align_frames, dt, metric, thresh,
     elif metric == 'amplitude':
         if amp_data is None:
             raise ValueError("metric='amplitude' needs amp_data")
-        metric_trial = np.array([
-            trial_amplitudes(amp_data[c][0], amp_data[c][1], align_frames,
-                             half_width, min_spikes=min_spikes)[0]
-            for c in range(n_cells)])
+        if amp_ref not in ('stable', 'median'):
+            raise ValueError(f"amp_ref must be 'stable' or 'median', got {amp_ref!r}")
+        metric_trial = np.full((n_cells, align_frames.shape[0]), np.nan)
+        for c in range(n_cells):
+            fr_c, amp_c = amp_data[c]
+            ref = None                                 # -> session median
+            if amp_ref == 'stable':
+                ref = reference_amplitude(fr_c, amp_c, n_frames, dt, ref_pct=ref_pct)
+                if not np.isfinite(ref):
+                    ref = None
+            metric_trial[c] = trial_amplitudes(fr_c, amp_c, align_frames, half_width,
+                                               ref=ref, min_spikes=min_spikes)[0]
     else:
         raise ValueError("metric must be 'firing rate' or 'amplitude', "
                          f"got {metric!r}")

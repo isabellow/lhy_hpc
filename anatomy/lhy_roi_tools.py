@@ -408,7 +408,7 @@ def migrate_annotation(ann):
         ann['format_version'] = 3
     if ann.get('format_version', 3) < 4:
         ann['format_version'] = 4
-    for s in ann['sections'].values():          # fields added along the way
+    for key, s in ann['sections'].items():      # fields added along the way
         s.setdefault('source', 'image')
         s.setdefault('crop_px', None)
         s.setdefault('part', None)
@@ -421,6 +421,24 @@ def migrate_annotation(ann):
         for field in ('dmdl_px', 'ac_px', 'ellipses', 'scars'):
             if s.get(field) is None:       # written as null by an earlier version
                 s[field] = []
+        # Exact duplicate AC marks cannot be clicked by hand (they are floats),
+        # so they only ever come from an overlay leak in the GUI.  Collapse
+        # them, keeping the first of each, rather than letting them weight the
+        # mean in ac_depth_um.
+        if len(s['ac_px']) > 1:
+            seen, uniq = set(), []
+            for xy in s['ac_px']:
+                t = (float(xy[0]), float(xy[1]))
+                if t not in seen:
+                    seen.add(t)
+                    uniq.append(list(xy))
+            if len(uniq) < len(s['ac_px']):
+                warnings.warn('%s: %d duplicate AC marks collapsed to %d -- the '
+                              'file was written by a GUI version that leaked '
+                              'overlays between sections; check which section '
+                              'the AC really belongs to'
+                              % (key, len(s['ac_px']) - len(uniq), len(uniq)))
+                s['ac_px'] = uniq
         s.setdefault('slide_xy_px', None)
         s.setdefault('slide_xy_source', None)
         s.setdefault('order_source', 'default')
@@ -512,6 +530,22 @@ HP_WIDTH_FIT = dict(L=2285.8, ap0=3682.6, k=1001.8, resid_sd=156.4,
 # reading a yaw angle off it would not be.
 HP_HEMISPHERE_FIT = dict(offset_sd=73.0, offset_mean_abs=58.0, offset_max=172.0,
                          paired_sections=403, n_brains=11, se_per_brain=65.0)
+
+# Between-bird variation in the width curve, from per-brain fits to the 11
+# atlas brains in hippocampusWidths.fig:
+#     plateau width L : mean 2297, SD 133 um  (fitted per bird by fit_hp_size)
+#     AP position ap0 : mean 3674, SD 192 um  (NOT fitted -- see below)
+#
+# ap0 is what limits the section-angle estimate.  A bird whose curve sits
+# 192 um anterior of the atlas mean has every width-derived AP shifted by
+# 192 um, with no tilt whatsoever, and that is indistinguishable from a real
+# tilt using the AC and the hippocampus alone.  At an AC depth of 3000 um it
+# reads as 3.7 deg of spurious pitch.  Getting the AC section itself wrong
+# matters much less: the commissure spans only 2-3 sections at 100 um, so
+# +-1 section is +-100 um, or 1.9 deg.  Together they put a floor of roughly
+# +-4 deg on any section pitch inferred this way.
+HP_AP0_SD = 192.0                 # um, between-bird spread of the curve position
+HP_L_SD = 133.0                   # um, between-bird spread of the plateau width
 
 # a per-bird hippocampus size is only used when the marks pin it down this
 # well, and only if the answer is anatomically plausible
@@ -1186,13 +1220,21 @@ class LHyROIs(object):
         (positive = the surface landmark sits anterior of where the AC series
         puts the section).
 
-        Read it as a section-plane tilt only if you believe the offset is
-        geometric.  A misidentified AC section, or a wrong ac_ap_um, produces
-        exactly the same constant offset, and the two landmarks alone cannot
-        tell them apart -- but they call for opposite treatments: a shift of
-        the whole series (ap_anchor='hp') rather than a shear.  A useful check
-        is whether shearing makes the probe angles of several birds agree
-        better or worse; if worse, the offset is probably not a tilt.
+        Read it as a section-plane tilt only with the error budget in mind.
+        The correction itself is exact -- a forward simulation of a tilted
+        series recovers a known probe angle to within 0.1 deg -- but the
+        offset it is driven by carries about +-4 deg of systematic
+        uncertainty, almost all of it from between-bird variation in where
+        the hippocampal width curve sits in AP (HP_AP0_SD), with a smaller
+        contribution from picking the AC section (+-1 section is only
+        +-1.9 deg, since the commissure spans 2-3 sections at 100 um).
+        A wrong ac_ap_um shifts every bird alike and so cancels when birds
+        are compared, but not in the absolute.
+
+        Below roughly 4 deg, prefer a plain shift of the series
+        (ap_anchor='hp') over a shear.  A useful check on whether the offsets
+        are geometric is whether shearing makes the probe angles of several
+        birds agree better or worse.
 
         The difference between the
         the hemispheres' shifts is an apparent yaw about the DV axis -- but

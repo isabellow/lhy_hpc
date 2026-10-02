@@ -88,10 +88,12 @@ from lhy_roi_gui import launch
 # --------------------------------------------------------------------------- #
 #  PARAMETERS                                                                  #
 # --------------------------------------------------------------------------- #
-
-bird = 'TRQ82' 
+bird = 'LMN86'
+# bird = 'LIM64' 
+# bird = 'TRQ82' 
 # bird = 'LMN88'
-hist_folder = 'bad_model' # '20260804_091518_518'
+hist_folder = '20260915_090644_980'
+# hist_folder = 'bad_model'
 # hist_folder = '20260804_091518_518'
 hist_root = 'Z:/Isabel/histology/lhy_implants/'
 data_root = 'Z:/Isabel/data/lhy_implants/'
@@ -176,7 +178,7 @@ shank_labels = ['A', 'B']
 # These override whatever is stored in the JSON whenever they are not None, so
 # set one to None if you would rather edit it in the GUI.
 
-# cut thickness of each section, um   (EDIT -- placeholder)
+# cut thickness of each section, um 
 section_thickness_um = 100.0
 
 # cut sections per step in the series: 1 if every section was mounted, 2 if

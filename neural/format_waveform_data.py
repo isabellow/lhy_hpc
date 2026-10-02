@@ -12,6 +12,19 @@ import helpers
 def load_wf_data(session_dir, ks_dir='kilosort4'):
     waveform_struct = load_matlab_data.loadmat_sbx(f"{session_dir}{ks_dir}waveformStruct.mat")
     waveform_struct = waveform_struct['wvStruct']
+
+    # max_site is taken over all Intan channels, including ones excluded from
+    # sorting; move those cells to their largest channel that was sorted
+    map_file = f"{session_dir}{ks_dir}channel_map.npy"
+    if os.path.isfile(map_file):
+        channel_map = np.load(map_file).squeeze().astype(int)
+        max_site = np.asarray(waveform_struct['max_site']).astype(int)
+        bad = ~np.isin(max_site - 1, channel_map)
+        if np.any(bad):
+            wf = np.asarray(waveform_struct['waveFormsMean'])     # (n_t, n_ch, n_cells)
+            ptp = np.ptp(wf[:, channel_map][:, :, bad], axis=0)   # (n_sorted_ch, n_bad)
+            max_site[bad] = channel_map[np.argmax(ptp, axis=0)] + 1
+            waveform_struct['max_site'] = max_site
     return waveform_struct
 
 def load_wf_multi_session(wf_file_path):
