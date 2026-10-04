@@ -214,14 +214,15 @@ hp_L_um = 'auto'
 ac_dv_um = None
 
 # which landmark sets AP:
-#   'ac'    the anterior commissure, via section counting
-#   'hp'    shift the whole series onto the DM/DL marks, which sit at the
-#           surface and so are much less sensitive to the section angle
+#   'ac'    The anterior commissure, via section counting. This makes
+#           AP measurements more accurate at depths close to the AC.
+#   'hp'    The DM/DL marks, via a fit to hippocampal width. This makes 
+#           AP measurements more accurate near the surface.
 #   'shear' use BOTH: the AC pins the deep end, the DM/DL marks pin the
 #           surface, and every annotation is corrected in proportion to its
 #           own depth, per hemisphere.  This is the one to use for comparing
 #           AP across birds.  Needs ac_dv_um; falls back to 'hp' without it.
-ap_anchor = 'shear'
+ap_anchor = 'ac'
 
 # the AC in the OTHER hemisphere, if slicing yaw puts it on a different
 # section: (slide, region), or None to use ac_section for both.  With

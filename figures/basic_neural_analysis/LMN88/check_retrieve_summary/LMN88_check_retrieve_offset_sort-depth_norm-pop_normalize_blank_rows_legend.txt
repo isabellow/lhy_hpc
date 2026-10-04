@@ -1,0 +1,17 @@
+LMN88, offset-aligned
+
+Each row is one cell and each column a time bin (20 ms) relative to event offset (dashed line). Top row: checks (site opened, contents unchanged, <= 1.5 s). Bottom row: retrievals (seed removed). Left: a seed the bird should expect (its own caches, or baits it has already found in any earlier interaction with the site). Right: empty checks / retrievals of baits at a site the bird had never opened. Checks of undiscovered baits are left out.
+
+Activity: each cell's instantaneous firing rate over the whole session was divided by its session SD (+0.01) and a running-average baseline (window 30) was subtracted (pop_normalize), so units are SDs from baseline; this trace was then averaged across events and Gaussian-smoothed (sigma 20 ms). Colour limits -1 to 1 SD (red above, blue below baseline).
+Per cell, events were excluded where the unit's amplitude in a 1-min window around the event was below 0.7x its session average.
+A cell/condition is drawn only with >= 3 usable events. Cells: all good units, session firing rate > 0.1 Hz.
+
+Sorting: grouped by bird and shank (blocks ordered by the shank's mean AP position (posterior first)); within each shank, cells ordered by estimated DV of their best channel, dorsal to ventral.
+
+All panels show the same cells in the same rows; grey rows had too few events in that condition.
+
+Per panel:
+  occupied checks: 109 cells, 260 events, 5 sessions, 1 bird; median event duration 0.32 s
+  empty checks: 109 cells, 5037 events, 5 sessions, 1 bird; median event duration 0.24 s
+  cached retrievals: 108 cells (of 109 rows), 433 events, 5 sessions, 1 bird; median event duration 1.34 s
+  baited retrievals: 52 cells (of 109 rows), 13 events, 4 sessions, 1 bird; median event duration 1.00 s

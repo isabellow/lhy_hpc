@@ -351,7 +351,7 @@ def plot_tracks_and_lhy(rois_by_bird, colors=None, combine='mean_shape',
         # ax.scatter(*loc[1], color=colors[bird], marker='v', s=20, depthshade=False)
         labelled.add(bird)
         if label_tracks:
-            ax.text(*seg[0], label + (' (mirrored)' if flip else ''),
+            ax.text(*seg[0], label,
                     size='x-small', weight='semibold', ha='left', va='bottom')
         extent = [np.concatenate([e, seg[:, i]]) for i, e in enumerate(extent)]
 

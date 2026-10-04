@@ -1,0 +1,14 @@
+LH ROS107, empty checks
+
+Each row is one cell and each column a time bin (20 ms) relative to check onset (-0.5 to 0.5 s) and offset (-0.5 to 0.5 s); dashed line at 0. Empty checks: site interactions with no seed change lasting <= 1.5 s, at a site the seed ledger scores as empty.
+Isolated checks only: checks whose analysis window (spanning the plotted windows) overlapped another site interaction (check, cache or retrieval) or an eating bout were excluded; perch visits were allowed.
+Activity: each cell's instantaneous firing rate over the whole session was divided by its session SD (+0.01) and a running-average baseline (window 30) was subtracted (pop_normalize), so units are SDs from baseline; this trace was averaged across checks and Gaussian-smoothed (sigma 20 ms). Colour limits -1 to 1 SD (red above, blue below baseline).
+Per cell, checks were excluded where the unit's amplitude in a 1-min window around the check was below 0.7x its session average.
+A cell is drawn only with >= 3 usable checks. Cells: all good units, session firing rate > 0.1 Hz.
+
+Sorting: ordered by the instantaneous phase of the Hilbert transform of each cell's mean-subtracted average response (the whole window, onset-aligned), read 20 ms after check onset (the peak of the population-average response), as in Payne & Aronov 2025 (Fig. 4b); phases in descending order starting from -180 deg.
+Not cross-validated: the order was set from the same checks that are plotted, so the sequence is partly built in by the sort.
+
+459 cells, 5 sessions, 1 bird.
+Checks: 2529 checks, 2519 of them empty; 0 too close to the session edge, 28 overlapping another event (site interaction: 14, eating bout: 14); 2491 used, median 642 per cell after the drift cut.
+Median check duration 0.24 s.

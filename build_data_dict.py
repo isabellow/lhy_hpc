@@ -974,6 +974,7 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
     print("\n=== anatomy / channel positions ===")
     data_dict = get_probe_coords_lhy.get_raw_anatomy_info(SESSION_INFO_FILE, data_dict)
     data_dict = get_probe_coords_lhy.convert_anatomy_info(data_dict)
+    data_dict = lhy_boundaries.fill_anatomy_from_annotations(data_dict, bird_ids, ROOT_DIR)
     data_dict = get_probe_coords_lhy.save_cell_positions(data_dict, ROOT_DIR)
     np.save(DATA_FILE, data_dict)
 

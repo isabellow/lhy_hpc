@@ -1,0 +1,18 @@
+LMN88, onset-aligned
+
+Each row is one cell and each column a time bin (20 ms) relative to event onset (dashed line). Top row: checks (site opened, contents unchanged, <= 1.5 s). Bottom row: retrievals (seed removed). Left: a seed the bird should expect (its own caches, or baits it has already found in any earlier interaction with the site). Right: empty checks / retrievals of baits at a site the bird had never opened. Checks of undiscovered baits are left out.
+
+Activity: each cell's instantaneous firing rate over the whole session was divided by its session SD (+0.01) and a running-average baseline (window 30) was subtracted (pop_normalize), so units are SDs from baseline; this trace was then averaged across events and Gaussian-smoothed (sigma 20 ms). Colour limits -1 to 1 SD (red above, blue below baseline).
+Per cell, events were excluded where the unit's amplitude in a 1-min window around the event was below 0.7x its session average.
+A cell/condition is drawn only with >= 3 usable events. Cells: all good units, session firing rate > 0.1 Hz.
+
+Sorting: ordered by the time of each cell's peak (the whole window) in occupied checks, earliest on top.
+Not cross-validated: the order was set from all occupied checks events, which are also the ones plotted, so the sequence in that panel is partly built in by the sort.
+
+Sessions short of any condition were excluded, so all panels show the same cells in the same rows.
+
+Per panel:
+  occupied checks: 52 cells, 177 usable events (median 10 used per cell after the drift cut), 4 sessions, 1 bird; median event duration 0.32 s
+  empty checks: 52 cells, 3885 usable events (median 984 used per cell after the drift cut), 4 sessions, 1 bird; median event duration 0.24 s
+  cached retrievals: 52 cells, 399 usable events (median 89 used per cell after the drift cut), 4 sessions, 1 bird; median event duration 1.34 s
+  baited retrievals: 52 cells, 13 usable events (median 3 used per cell after the drift cut), 4 sessions, 1 bird; median event duration 1.00 s

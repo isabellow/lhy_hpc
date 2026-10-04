@@ -1,0 +1,14 @@
+HPC SLV132, empty checks
+
+Each row is one cell and each column a time bin (20 ms) relative to check onset (-0.5 to 0.5 s) and offset (-0.5 to 0.5 s); dashed line at 0. Empty checks: site interactions with no seed change lasting <= 1.5 s, at a site the seed ledger scores as empty.
+Isolated checks only: checks whose analysis window (spanning the plotted windows) overlapped another site interaction (check, cache or retrieval) or an eating bout were excluded; perch visits were allowed.
+Activity: each cell's instantaneous firing rate over the whole session was divided by its session SD (+0.01) and a running-average baseline (window 30) was subtracted (pop_normalize), so units are SDs from baseline; this trace was averaged across checks and Gaussian-smoothed (sigma 20 ms). Colour limits -1 to 1 SD (red above, blue below baseline).
+Per cell, checks were excluded where the unit's amplitude in a 1-min window around the check was below 0.7x its session average.
+A cell is drawn only with >= 3 usable checks. Cells: all good units, session firing rate > 0.1 Hz, in the projection nucleus (on or beside stim-responsive channels); sessions without stim data excluded.
+
+Sorting: ordered by the instantaneous phase of the Hilbert transform of each cell's mean-subtracted average response (the whole window, onset-aligned), read 460 ms after check onset (the peak of the population-average response), as in Payne & Aronov 2025 (Fig. 4b); phases in descending order starting from -180 deg.
+Cross-validated: each session's checks were split in half (alternating checks in time); half 0 set the order and the heatmap shows only half 1.
+
+342 cells, 4 sessions, 1 bird.
+Checks: 6376 checks, 6286 of them empty; 5 too close to the session edge, 535 overlapping another event (site interaction: 521, eating bout: 14); 2872 in the plotted half, median 771.5 per cell after the drift cut.
+Median check duration 0.20 s.

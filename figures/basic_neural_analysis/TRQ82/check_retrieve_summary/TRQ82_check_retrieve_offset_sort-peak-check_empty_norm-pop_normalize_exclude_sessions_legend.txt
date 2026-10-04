@@ -1,0 +1,18 @@
+TRQ82, offset-aligned
+
+Each row is one cell and each column a time bin (20 ms) relative to event offset (dashed line). Top row: checks (site opened, contents unchanged, <= 1.5 s). Bottom row: retrievals (seed removed). Left: a seed the bird should expect (its own caches, or baits it has already found in any earlier interaction with the site). Right: empty checks / retrievals of baits at a site the bird had never opened. Checks of undiscovered baits are left out.
+
+Activity: each cell's instantaneous firing rate over the whole session was divided by its session SD (+0.01) and a running-average baseline (window 30) was subtracted (pop_normalize), so units are SDs from baseline; this trace was then averaged across events and Gaussian-smoothed (sigma 20 ms). Colour limits -1 to 1 SD (red above, blue below baseline).
+Per cell, events were excluded where the unit's amplitude in a 1-min window around the event was below 0.7x its session average.
+A cell/condition is drawn only with >= 3 usable events. Cells: all good units, session firing rate > 0.1 Hz.
+
+Sorting: ordered by the time of each cell's peak (the whole window) in empty checks, earliest on top.
+Cross-validated: empty checks events were split in half (alternating events in time); half 0 set the order and the empty checks panel shows only half 1. The other panels use all their events.
+
+Sessions short of any condition were excluded, so all panels show the same cells in the same rows.
+
+Per panel:
+  occupied checks: 136 cells, 69 usable events (median 10 used per cell after the drift cut), 3 sessions, 1 bird; median event duration 0.36 s
+  empty checks: 136 cells, 3420 usable events (median 1141 used per cell after the drift cut), 3 sessions, 1 bird; median event duration 0.18 s
+  cached retrievals: 136 cells, 19 usable events (median 6 used per cell after the drift cut), 3 sessions, 1 bird; median event duration 5.40 s
+  baited retrievals: 136 cells, 15 usable events (median 5 used per cell after the drift cut), 3 sessions, 1 bird; median event duration 0.64 s
