@@ -234,7 +234,8 @@ FS = 30000
 SPIKE_IDX = 45
 
 SHAPE_KEYS = ['amp', 'pk_trough_ratio', 'polarity', 'width_ms', 'half_width_ms',
-              'asymmetry', 'pre_ratio', 'post_ratio', 'main_offset_ms']
+              'asymmetry', 'pre_ratio', 'post_ratio', 'main_offset_ms',
+              'deriv_ratio', 'asymmetry_raw', 'trough_peak_lag_ms', 'deriv_ratio_raw']
 SPATIAL_KEYS = ['n_ch_above', 'extent_um', 'weighted_dist_um', 'decay_um',
                 'latency_ms_per_100um', 'latency_r2']
 
@@ -364,6 +365,23 @@ def waveform_shape(wf, fs=FS, spike_idx=SPIKE_IDX, upsample=10,
       pre_ratio, post_ratio : a / amp, b / amp
       main_offset_ms : time of the dominant extremum minus the KS spike time
                        (large values => KS aligned to a different phase)
+      deriv_ratio : log10(steepest rise / steepest fall) around the dominant
+                    extremum, on the polarity-aligned waveform; the "peak
+                    derivative ratio" of getWaveformProps.m. Negative when
+                    the spike recovers more slowly than it falls.
+    Un-mirrored versions, measured on the waveform as recorded (not flipped),
+    so they vary continuously across the polarity boundary; use these instead
+    of width / asymmetry when clustering positive and negative units together:
+      asymmetry_raw : asymmetry around the most negative point
+      trough_peak_lag_ms : time from the most negative point near the spike to
+                    the largest positive point from pre_win_ms before it to
+                    post_win_ms after it (the windows width_ms uses). Equals
+                    width_ms for a classic negative spike; negative when the
+                    peak comes first (positive-first / peak-dominant units),
+                    so it acts as a signed width across polarities
+      deriv_ratio_raw : log10(steepest rise / steepest fall) in that same
+                    window; equals deriv_ratio for trough-dominant units and
+                    its negative for peak-dominant ones
     '''
     out = dict.fromkeys(SHAPE_KEYS, np.nan)
     wf = np.asarray(wf, dtype=float)
@@ -402,11 +420,36 @@ def waveform_shape(wf, fs=FS, spike_idx=SPIKE_IDX, upsample=10,
     pre = z[max(i - _ms_to_samp(pre_win_ms, f), 0):i]
     a = max(pre.max(), 0.0) if pre.size else 0.0
 
+    # steepest rise / steepest fall around the dominant extremum
+    d_lo = max(i - _ms_to_samp(pre_win_ms, f), 0)
+    d_hi = min(i + _ms_to_samp(post_win_ms, f) + 1, z.size)
+    dz = np.diff(z[d_lo:d_hi])
+    deriv_ratio = (np.log10(dz.max() / -dz.min())
+                   if dz.size and dz.max() > 0 and dz.min() < 0 else np.nan)
+
+    # un-mirrored features on y as recorded: anchored on the most negative
+    # point near the spike, peak searched over the same windows as width_ms
+    j_tr = lo + int(np.argmin(y[lo:hi]))
+    w_lo = max(j_tr - _ms_to_samp(pre_win_ms, f), 0)
+    w_hi = min(j_tr + _ms_to_samp(post_win_ms, f) + 1, y.size)
+    j_pk = w_lo + int(np.argmax(y[w_lo:w_hi]))
+    pre_raw = y[w_lo:j_tr]
+    post_raw = y[j_tr:w_hi]
+    a_raw = max(pre_raw.max(), 0.0) if pre_raw.size else 0.0
+    b_raw = max(post_raw.max(), 0.0)
+    dy = np.diff(y[w_lo:w_hi])
+    deriv_raw = (np.log10(dy.max() / -dy.min())
+                 if dy.size and dy.max() > 0 and dy.min() < 0 else np.nan)
+
     out.update(amp=amp, pk_trough_ratio=ratio, polarity=pol, width_ms=width,
                half_width_ms=_half_width(z, i) / f * 1e3,
                asymmetry=(b - a) / (b + a) if (a + b) > 0 else np.nan,
                pre_ratio=a / amp, post_ratio=b / amp,
-               main_offset_ms=(i - s0) / f * 1e3)
+               main_offset_ms=(i - s0) / f * 1e3,
+               deriv_ratio=deriv_ratio,
+               asymmetry_raw=(b_raw - a_raw) / (b_raw + a_raw) if (a_raw + b_raw) > 0 else np.nan,
+               trough_peak_lag_ms=(j_pk - j_tr) / f * 1e3,
+               deriv_ratio_raw=deriv_raw)
     return out
 
 
@@ -631,7 +674,8 @@ def unit_stability(spike_frames, amps, n_frames, dt, amp_frac=0.7,
     dict with chunk_s (length used, s), mean_rate, stable_rate (Hz),
     frac_stable (of time), presence_ratio, rate_amp_rho (Spearman, across
     measured chunks), amp_drop (1 - min / reference chunk amplitude), and
-    per-chunk arrays under 'chunks' (centers in frames, rate, med_amp, stable).
+    per-chunk arrays under 'chunks' (centers and half-width in frames, rate,
+    med_amp, stable).
     '''
     import spike_amplitudes       # imported here so this module loads without it
 
@@ -663,7 +707,8 @@ def unit_stability(spike_frames, amps, n_frames, dt, amp_frac=0.7,
     if stable.any():
         res['stable_rate'] = counts[stable].sum() / dur[stable].sum()
         res['frac_stable'] = dur[stable].sum() / dur.sum()
-    res['chunks'] = dict(centers=ch['centers'], rate=rate, med_amp=med, stable=stable)
+    res['chunks'] = dict(centers=ch['centers'], half=ch['half'], rate=rate,
+                         med_amp=med, stable=stable)
     return res
 
 
@@ -685,6 +730,175 @@ def stability_for_units(amp_data, n_frames, dt, **kw):
     return out
 
 
+ACG_BIN_S = 0.5e-3       # CellExplorer narrow ACG: 0.5 ms bins
+ACG_N_BINS = 100         # ... out to 50 ms
+TRAIN_KEYS = ['n_spikes_used', 'inv_median_isi_hz', 'cv2', 'burst_index',
+              'acg_tau_rise_ms', 'acg_tau_decay_ms', 'acg_tau_burst_ms',
+              'acg_refrac_ms', 'acg_fit_r2']
+
+
+def stable_intervals(chunks, frame_t, dt):
+    '''
+    Merge a unit's stable stability chunks into (start, end) intervals in
+    seconds on the ephys clock (the clock of frame_times.npy).
+
+    chunks : one entry of stability_for_units(...)['chunks']
+    frame_t : frame_times.npy (s);  dt : s per frame
+    '''
+    if chunks is None:
+        return []
+    frame_t = np.asarray(frame_t, dtype=float)
+    n_frames = frame_t.size
+    out = []
+    for c, ok in zip(chunks['centers'], chunks['stable']):
+        if not ok:
+            continue
+        lo = int(np.clip(c - chunks['half'], 0, n_frames - 1))
+        hi = int(np.clip(c + chunks['half'], 0, n_frames - 1))
+        start, end = frame_t[lo], frame_t[hi] + dt
+        if out and start <= out[-1][1] + 1e-9:     # contiguous with the previous chunk
+            out[-1][1] = end
+        else:
+            out.append([start, end])
+    return [tuple(iv) for iv in out]
+
+
+def _interval_index(spike_t, intervals):
+    '''which interval each spike falls in (-1 if none)'''
+    idx = np.full(spike_t.size, -1)
+    for k, (a, b) in enumerate(intervals):
+        idx[(spike_t >= a) & (spike_t < b)] = k
+    return idx
+
+
+def narrow_acg(spike_t, seg=None, bin_s=ACG_BIN_S, n_bins=ACG_N_BINS):
+    '''
+    Autocorrelogram at lags 0..n_bins bins (one side), in Hz, as CellExplorer
+    computes it (CCG, 'norm', 'rate'): spike pairs counted in bins centred on
+    multiples of bin_s, divided by bin width and number of reference spikes.
+    All spike pairs are counted, not just consecutive ISIs. Pairs spanning two
+    different intervals (seg) are not counted, so gaps between stable
+    stretches don't create false long lags.
+    '''
+    t = np.sort(np.asarray(spike_t, dtype=float))
+    seg = np.zeros(t.size, int) if seg is None else np.asarray(seg)[np.argsort(spike_t)]
+    counts = np.zeros(n_bins + 1)
+    max_lag = (n_bins + 0.5) * bin_s
+    for k in range(1, t.size):
+        d = t[k:] - t[:-k]
+        near = d < max_lag
+        if not near.any():
+            break                     # lags only grow with k
+        use = near & (seg[k:] == seg[:-k])
+        np.add.at(counts, np.rint(d[use] / bin_s).astype(int), 1)
+    return counts / (bin_s * max(t.size, 1))
+
+
+def _acg_model(x, a, b, c, d, e, f, g, h):
+    '''CellExplorer fit_ACG.m: max(c*(exp(-(x-f)/a)-d*exp(-(x-f)/b))+h*exp(-(x-f)/g)+e, 0)'''
+    return np.maximum(c * (np.exp(-(x - f) / a) - d * np.exp(-(x - f) / b))
+                      + h * np.exp(-(x - f) / g) + e, 0)
+
+
+def fit_acg(acg):
+    '''
+    Port of CellExplorer's fit_ACG.m (triple exponential, same start point and
+    bounds) to scipy. acg: narrow_acg output (lags 0..50 ms in 0.5 ms bins).
+    As in fit_ACG.m, the bins at -0.5, 0 and +0.5 ms are zeroed and the fit
+    runs over lags 0.5..50 ms. scipy's bounded least squares is not MATLAB's
+    fit(), so individual fits can land in different local minima; compare a
+    few units against CellExplorer before relying on exact values.
+
+    Returns dict: tau_decay, tau_rise, tau_burst, refrac (ms), r2 -- nan if
+    the fit fails.
+    '''
+    from scipy.optimize import curve_fit
+    out = dict(tau_decay=np.nan, tau_rise=np.nan, tau_burst=np.nan, refrac=np.nan, r2=np.nan)
+    y = np.asarray(acg, dtype=float).copy()
+    if y.size < 101 or not np.all(np.isfinite(y)) or not np.any(y[1:101] > 0):
+        return out
+    y[:2] = 0
+    x = np.arange(1, 101) * 0.5
+    y = y[1:101]
+    a0 = [20, 1, 30, 2, 0.5, 5, 1.5, 2]
+    lb = [1, 0.1, 0, 0, -30, 0, 0.1, 0]
+    ub = [500, 50, 500, 15, 50, 20, 5, 100]
+    try:
+        p, _ = curve_fit(_acg_model, x, y, p0=a0, bounds=(lb, ub), maxfev=20000)
+    except (RuntimeError, ValueError):
+        return out
+    resid = y - _acg_model(x, *p)
+    ss = np.sum((y - y.mean()) ** 2)
+    out.update(tau_decay=p[0], tau_rise=p[1], tau_burst=p[6], refrac=p[5],
+               r2=1 - np.sum(resid ** 2) / ss if ss > 0 else np.nan)
+    return out
+
+
+def spike_train_features(spike_t, intervals=None, min_spikes=100, burst_isi_s=6e-3):
+    '''
+    Firing-pattern features of one unit, measured only within intervals (the
+    unit's stable stretches; whole train if None). ISIs and ACG pairs that
+    span two intervals are not used.
+
+    Returns dict (nan if fewer than min_spikes spikes in the intervals):
+      n_spikes_used
+      inv_median_isi_hz : 1 / median ISI ("inv. isi" in classifyUnitTypes)
+      cv2 : mean of 2|ISI(n+1) - ISI(n)| / (ISI(n+1) + ISI(n)), consecutive
+            ISI pairs; ~1 for Poisson firing, < 1 regular, > 1 bursty
+      burst_index : fraction of ISIs < burst_isi_s
+      acg_tau_rise_ms, acg_tau_decay_ms, acg_tau_burst_ms, acg_refrac_ms,
+      acg_fit_r2 : CellExplorer ACG fit (fit_acg)
+    '''
+    out = dict.fromkeys(TRAIN_KEYS, np.nan)
+    t = np.sort(np.asarray(spike_t, dtype=float))
+    if intervals is not None:
+        seg = _interval_index(t, intervals)
+        keep = seg >= 0
+        t, seg = t[keep], seg[keep]
+    else:
+        seg = np.zeros(t.size, int)
+    out['n_spikes_used'] = t.size
+    if t.size < min_spikes:
+        return out
+
+    isi = np.diff(t)
+    same = seg[1:] == seg[:-1]                # ISIs within one interval
+    isi_ok = isi[same]
+    if isi_ok.size:
+        out['inv_median_isi_hz'] = 1 / np.median(isi_ok)
+        out['burst_index'] = np.mean(isi_ok < burst_isi_s)
+    pair = same[1:] & same[:-1]               # consecutive ISIs in one interval
+    i1, i2 = isi[:-1][pair], isi[1:][pair]
+    if i1.size:
+        out['cv2'] = np.mean(2 * np.abs(i2 - i1) / (i2 + i1))
+
+    fit = fit_acg(narrow_acg(t, seg))
+    out.update(acg_tau_rise_ms=fit['tau_rise'], acg_tau_decay_ms=fit['tau_decay'],
+               acg_tau_burst_ms=fit['tau_burst'], acg_refrac_ms=fit['refrac'],
+               acg_fit_r2=fit['r2'])
+    return out
+
+
+def spike_train_features_for_units(spike_t, spike_id, unit_ids, intervals_list=None, **kw):
+    '''
+    spike_train_features for each cluster ID in unit_ids (e.g. goodIDs), from
+    the full-length spike_times (s) and spike_clusters. intervals_list: one
+    list of intervals per unit (stable_intervals), or None for whole trains.
+    Returns (n_units,) arrays keyed by TRAIN_KEYS.
+    '''
+    spike_t = np.asarray(spike_t, dtype=float).ravel()
+    spike_id = np.asarray(spike_id).ravel()
+    out = {k: np.full(len(unit_ids), np.nan) for k in TRAIN_KEYS}
+    for u, uid in enumerate(np.asarray(unit_ids).astype(int).ravel()):
+        iv = None if intervals_list is None else intervals_list[u]
+        if iv is not None and len(iv) == 0:      # never well recorded
+            continue
+        r = spike_train_features(spike_t[spike_id == uid], iv, **kw)
+        for k in TRAIN_KEYS:
+            out[k][u] = r[k]
+    return out
+
+
 def _robust_z(X):
     med = np.median(X, axis=0)
     q75, q25 = np.percentile(X, [75, 25], axis=0)
@@ -696,32 +910,44 @@ def _robust_z(X):
 
 def cluster_negative_units(feats, rate_key='stable_rate', spread_key='decay_um',
                            width_key='width_ms', n_clusters=2, method='gmm',
-                           max_k=4, min_frac_stable=0.0, seed=0, features=None):
+                           max_k=4, min_frac_stable=0.0, seed=0, features=None,
+                           polarities=(-1,), exclude=None, outlier_pct=None,
+                           n_model_samples=100000):
     '''
-    Cluster trough-dominant units in a chosen feature space; by default
-    (log10 rate, width, log10 spread).
+    Cluster units in a chosen feature space; by default trough-dominant units
+    in (log10 rate, width, log10 spread).
 
-    Only units with polarity == -1 and finite values for every feature are
-    clustered (and, optionally, frac_stable >= min_frac_stable; units
-    flagged 'peak_shank_mismatch' by build_data_dict are left out). A
-    log-scaled feature that is <= 0 for a unit (e.g. weighted_dist_um or
-    extent_um of 0 for a unit seen on one channel) is non-finite after the log,
-    so that unit is left out; counts are returned in 'n_nonpos'. Features
-    are robust-z-scored (median / IQR), so a few extreme units do not set the
-    scale. Clusters are numbered by the median of width_key if it is one of
-    the features (0 = narrowest), else by the first feature, rather than by
-    size: in LHy there is no reason to expect the larger cluster to be any
-    particular cell type.
+    Only units whose polarity is in `polarities` and that have finite values
+    for every feature are clustered (and, optionally, frac_stable >=
+    min_frac_stable; units flagged 'peak_shank_mismatch' by build_data_dict,
+    or True in `exclude`, are left out). A log-scaled feature that is <= 0
+    for a unit is non-finite after the log, so that unit is left out; counts
+    are returned in 'n_nonpos'. Features are robust-z-scored (median / IQR).
+    Clusters are numbered by the median of width_key if it is one of the
+    features (0 = narrowest), else by the first feature.
+
+    polarities : (-1,) clusters trough-dominant units only. (-1, 0, 1) fits
+        all units together; then use features defined the same way for every
+        polarity (log10 pk_trough_ratio, asymmetry_raw, trough_peak_lag_ms)
+        rather than width / asymmetry, which are mirrored for peak-dominant
+        units, so the same waveform shape would land in different places on
+        either side of the polarity boundary.
 
     For method='gmm', BIC is reported for k = 1..max_k. If k = 1 wins, the
     data do not support splitting in this space, whatever k-means says.
 
+    Outliers (gmm only): 'logpdf' is each clustered unit's log density under
+    the fitted mixture, in the z-scored space. With outlier_pct set, the
+    threshold is the outlier_pct percentile of log density over samples drawn
+    from the fitted model itself, i.e. a unit is an outlier if it is less
+    likely than (100 - outlier_pct)% of the units the model would produce.
+    'outlier' marks them (clustered units only).
+
     Params
     ------
     features : list of (key, log10) pairs, optional
-        Any per-unit keys of feats, e.g.
-        [('stable_rate', True), ('width_ms', False), ('asymmetry', False)].
-        Overrides rate_key / spread_key / width_key when given.
+        Any per-unit keys of feats; overrides rate_key / spread_key / width_key.
+    exclude : (n,) bool or None   units to leave out of the fit (e.g. spread cutoff)
 
     Returns
     -------
@@ -730,34 +956,41 @@ def cluster_negative_units(feats, rate_key='stable_rate', spread_key='decay_um',
       clustered : (n,) bool
       X : (n, n_features) the features, log10 applied where requested
       prob : (n, n_clusters) posterior (gmm only; nan elsewhere)
+      logpdf : (n,) log density under the mixture (gmm only; nan elsewhere)
+      logpdf_threshold : float or nan;  outlier : (n,) bool
       bic : {k: BIC} (gmm only)
       names : feature names; keys, log : the keys and log flags
-      n_nonpos : {key: n trough-dominant units with a value <= 0} (log features)
+      n_nonpos : {key: n units in `polarities` with a value <= 0} (log features)
     '''
     if features is None:
         features = [(rate_key, True), (width_key, False), (spread_key, True)]
     keys = [k for k, _ in features]
     logs = [bool(lg) for _, lg in features]
     n = len(feats['polarity'])
-    neg = np.asarray(feats['polarity']) == -1
+    in_pol = np.isin(np.asarray(feats['polarity']), polarities)
 
     cols, n_nonpos = [], {}
     for key, lg in features:
         v = np.asarray(feats[key], dtype=float)
         if lg:
-            n_nonpos[key] = int(np.sum(neg & np.isfinite(v) & (v <= 0)))
+            n_nonpos[key] = int(np.sum(in_pol & np.isfinite(v) & (v <= 0)))
             with np.errstate(divide='ignore', invalid='ignore'):
                 v = np.log10(v)
         cols.append(v)
     X = np.column_stack(cols)
 
-    ok = neg & np.all(np.isfinite(X), axis=1)
+    ok = in_pol & np.all(np.isfinite(X), axis=1)
     if 'peak_shank_mismatch' in feats:      # features and keep mask on different shanks
         ok &= ~np.asarray(feats['peak_shank_mismatch']).astype(bool)
     if min_frac_stable > 0:
         ok &= np.asarray(feats['frac_stable']) >= min_frac_stable
+    if exclude is not None:
+        ok &= ~np.asarray(exclude).astype(bool)
     labels = np.full(n, -1)
     prob = np.full((n, n_clusters), np.nan)
+    logpdf = np.full(n, np.nan)
+    outlier = np.zeros(n, bool)
+    lp_thresh = np.nan
     bic = {}
     if ok.sum() > n_clusters * 5:
         Z = _robust_z(X[ok])
@@ -770,6 +1003,11 @@ def cluster_negative_units(feats, rate_key='stable_rate', spread_key='decay_um',
                                     random_state=seed).fit(Z)
             lab = model.predict(Z)
             p = model.predict_proba(Z)
+            logpdf[ok] = model.score_samples(Z)
+            if outlier_pct is not None:
+                draws, _ = model.sample(n_model_samples)
+                lp_thresh = np.percentile(model.score_samples(draws), outlier_pct)
+                outlier = ok & (logpdf < lp_thresh)
         else:
             model = KMeans(n_clusters, n_init=100, random_state=seed).fit(Z)
             lab = model.labels_
@@ -782,9 +1020,348 @@ def cluster_negative_units(feats, rate_key='stable_rate', spread_key='decay_um',
         if p is not None:
             prob[ok] = p[:, order]
     names = [f'log10 {k}' if lg else k for k, lg in features]
-    return dict(labels=labels, clustered=ok, X=X, prob=prob, bic=bic,
+    return dict(labels=labels, clustered=ok, X=X, prob=prob, logpdf=logpdf,
+                logpdf_threshold=lp_thresh, outlier=outlier, bic=bic,
                 names=names, keys=keys, log=logs, n_nonpos=n_nonpos)
 
+
+# clusters any polarity set, not only trough-dominant units
+cluster_units = cluster_negative_units
+
+
+LOBE_EPS = 0.05   # lobe floor, as a fraction of the main extremum
+
+
+def _lobe_log_ratio(f):
+    '''
+    log10 of (lobe after / lobe before) the main extremum, on the
+    polarity-aligned waveform, with a floor of LOBE_EPS so a missing lobe
+    gives a finite value. Carries the same information as 'asymmetry'
+    (asymmetry = tanh(ln(ratio) / 2) without the floor) but doesn't pile up
+    at +-1 when one lobe is absent, which a GMM would otherwise model with a
+    narrow component of its own.
+    '''
+    pre = np.asarray(f['pre_ratio'], dtype=float)
+    post = np.asarray(f['post_ratio'], dtype=float)
+    return np.log10((post + LOBE_EPS) / (pre + LOBE_EPS))
+
+
+# features computed from saved ones, so they need no recomputation:
+# name -> (function of the features dict, keys it needs)
+DERIVED_FEATURES = {
+    'lobe_log_ratio': (_lobe_log_ratio, ('pre_ratio', 'post_ratio')),
+}
+
+
+def add_derived_features(feats):
+    '''Add any DERIVED_FEATURES not already in feats whose inputs are present.'''
+    for name, (fn, needs) in DERIVED_FEATURES.items():
+        if name not in feats and all(k in feats for k in needs):
+            feats[name] = fn(feats)
+    return feats
+
+
+
+''' ------------------------------------------------------------------------
+Cell-type clustering across a whole data dict
+
+Defaults for cluster_waveform_features. Wrappers (build_data_dict) can pass
+their own values instead of editing these.
+------------------------------------------------------------------------ '''
+# A GMM is fit to the cells of every session at once; each feature is
+# (key, log10 transform).
+# The default set follows Chettih's classifyUnitTypes.m (rate, inverse
+# median ISI, CV2, width, derivative ratio, asymmetry, ACG rise time), with
+# the v2 width and the drift-corrected rate.
+WF_CLUSTER_SOURCE = 'wf_features_v2'     # v2 waveforms: high-pass only, re-aligned
+WF_CLUSTER_FEATURES = [
+    ('stable_rate', True),         # firing rate while well recorded
+    ('inv_median_isi_hz', True),   # 1 / median ISI
+    ('cv2', False),                # local irregularity of ISIs
+    ('width_ms', False),           # trough-to-peak (repolarisation)
+    ('deriv_ratio', False),        # steepest rise / steepest fall (log10)
+    ('asymmetry', False),          # lobe after vs. before the trough
+    ('acg_tau_rise_ms', True),     # ACG rise time constant (CellExplorer fit)
+]
+# Which polarities to fit. (-1,): trough-dominant only, other polarities get
+# their own codes. (-1, 0, 1): everything in one model -- then swap the
+# mirrored shape features for ('pk_trough_ratio', True), ('asymmetry_raw', False)
+# and ('trough_peak_lag_ms', False), which are defined the same way for every
+# polarity (see cluster_negative_units).
+WF_CLUSTER_POLARITIES = (-1,)
+WF_N_CLUSTERS = None       # None: use the k with the lowest BIC (1..WF_MAX_K)
+WF_MAX_K = 8
+WF_MIN_POSTERIOR = 0.9     # cells assigned less confidently than this stay unclassified
+WF_OUTLIER_PCT = 1.0       # cells less likely than 99% of the model's own draws are outliers
+                           # (Chettih's logpdf < 0 works out to ~0.1% for their model)
+WF_MIN_FRAC_STABLE = 0.05  # cells well recorded for less of the session are not clustered
+# (feature, maximum): cells spreading further are treated as noise and left
+# out of the fit, as Chettih does with neuronSpread < 60 um. Our spread is
+# measured differently (noise floor, one shank), so pick the value from the
+# distribution printed by cluster_waveform_features; None = no cutoff.
+WF_SPREAD_CUTOFF = ('weighted_dist_um', None)
+WF_CLUSTER_SEED = 0
+
+# values of 'wf_cluster' other than cluster numbers (0, 1, ... in order of
+# increasing median width, or of the first feature if width is not used)
+WF_CLUSTER_CODES = {
+    -1: 'in the fitted polarity set but unclassified: a feature missing or not '
+        'log-scalable, unstable, peak channel on another shank, or posterior < min_posterior',
+    -2: 'peak-dominant (positive polarity), not in the fitted set',
+    -3: 'ambiguous polarity, not in the fitted set',
+    -4: 'no waveform',
+    -5: 'outlier: log density below the outlier_pct threshold',
+    -6: 'spread above spread_cutoff (likely noise), not fit',
+}
+
+
+def cluster_waveform_features(data_dict, source=WF_CLUSTER_SOURCE, features=WF_CLUSTER_FEATURES,
+                              n_clusters=WF_N_CLUSTERS, max_k=WF_MAX_K,
+                              min_posterior=WF_MIN_POSTERIOR, min_frac_stable=WF_MIN_FRAC_STABLE,
+                              polarities=WF_CLUSTER_POLARITIES, outlier_pct=WF_OUTLIER_PCT,
+                              spread_cutoff=WF_SPREAD_CUTOFF, seed=WF_CLUSTER_SEED,
+                              overwrite=False):
+    '''
+    GMM clustering of waveform / firing features across every cell in the dict.
+
+    Cells from all birds and sessions are pooled and clustered together, so a
+    cluster number means the same thing in every session. Cells whose polarity
+    is in `polarities` are fit (cluster_negative_units); the
+    other polarity groups get their own codes. Cells spreading beyond
+    spread_cutoff are treated as noise and left out of the fit. Cluster
+    numbers are ordered by median width (0 = narrowest). As in Chettih's
+    classifyUnitTypes.m, assignment is conservative: a cell gets a cluster
+    only if its posterior is at least min_posterior and it is not an outlier
+    (log density under the mixture below the outlier_pct percentile of the
+    model's own draws).
+
+    Writes
+    ------
+    data_dict[bird][session]['wf_cluster'] : int array, one per cell, in the
+        same order as the session's feature dict, cluster_ids and the rows of
+        aligned_spikes.npy (checked against 'cluster_ids'). Values: cluster
+        number, or a code in WF_CLUSTER_CODES.
+    data_dict[bird][session]['wf_cluster_prob'] : posterior of the most likely
+        cluster (nan for cells not fit)
+    data_dict[bird][session]['wf_cluster_logpdf'] : log density under the
+        mixture, in the z-scored feature space (nan for cells not fit)
+    data_dict[bird]['all_wf_cluster'] : the bird's sessions concatenated, in
+        'all_sessions' order (sessions without features are skipped)
+    data_dict[bird]['wf_cluster_info'] : features, k, BIC, codes and per-cluster
+        medians (identical for every bird)
+
+    Old 'excitatory_idx' / 'inhibitory_idx' labels are removed so they can't be
+    used by mistake.
+
+    Params
+    ------
+    data_dict : the build_data_dict dict, with data_dict[bird][session][source]
+    source : feature dict to cluster, e.g. 'wf_features_v2'
+    features : list of (key, log10) pairs
+    n_clusters : int, or None for the k with the lowest BIC (1..max_k)
+    min_posterior, outlier_pct : conservative assignment (see above)
+    min_frac_stable : cells well recorded for less of the session are not fit
+    polarities : polarity values to fit, e.g. (-1,) or (-1, 0, 1)
+    spread_cutoff : (feature, maximum) or (feature, None); cells above it get -6
+    overwrite : recompute even if nothing has changed
+    Defaults are the WF_* constants above.
+
+    Skipping: the settings and a hash of every input value the clustering
+    uses (the clustering features, polarity, stability, spread, cluster IDs,
+    and which sessions are included) are stored in wf_cluster_info. If both
+    match the stored ones, the existing labels are kept and nothing is
+    refit, so this is cheap to call every time; any change to the settings,
+    a new or recomputed session, or overwrite=True triggers a refit.
+    '''
+    import hashlib
+    import json
+    features = [tuple(f) for f in features]
+
+    birds = [b for b in data_dict
+             if isinstance(data_dict[b], dict) and 'all_sessions' in data_dict[b]]
+
+    # pool every session that has the feature set, in a fixed order
+    pooled, session_keys, session_sizes = {}, [], []
+    for bird in birds:
+        for session_id in data_dict[bird]['all_sessions']:
+            session_feats = data_dict[bird][session_id].get(source)
+            if session_feats is None:
+                continue
+            n_cells = len(session_feats['polarity'])
+            for key, values in session_feats.items():
+                if isinstance(values, np.ndarray) and values.shape[:1] == (n_cells,):
+                    pooled.setdefault(key, []).append(values)
+            session_keys.append((bird, session_id))
+            session_sizes.append(n_cells)
+
+    if not session_keys:
+        print(f"  no sessions have '{source}': nothing to cluster")
+        return data_dict
+    # only keys present in every session, so rows stay aligned
+    feats = {k: np.concatenate(v) for k, v in pooled.items() if len(v) == len(session_keys)}
+    feats = add_derived_features(feats)
+    missing = [k for k, _ in features if k not in feats]
+    if missing:
+        raise KeyError(f"cluster features not in every session's '{source}': {missing}")
+    n_total = len(feats['polarity'])
+
+    # fingerprint: the settings plus every input value the result depends on
+    settings = dict(source=source, features=[[k, bool(lg)] for k, lg in features],
+                    n_clusters=n_clusters, max_k=max_k, min_posterior=min_posterior,
+                    outlier_pct=outlier_pct, min_frac_stable=min_frac_stable,
+                    polarities=[float(p) for p in polarities],
+                    spread_cutoff=list(spread_cutoff) if spread_cutoff else None, seed=seed)
+    h = hashlib.sha1(json.dumps(settings, sort_keys=True, default=str).encode())
+    h.update(repr(session_keys).encode())
+    used = [k for k, _ in features] + ['polarity', 'frac_stable', 'peak_shank_mismatch',
+                                       'cluster_id'] + ([spread_cutoff[0]] if spread_cutoff else [])
+    for key in sorted(set(used)):
+        if key in feats:
+            h.update(key.encode())
+            h.update(np.ascontiguousarray(feats[key], dtype=float).tobytes())
+    for bird, session_id in session_keys:          # used by the alignment check
+        ids = data_dict[bird][session_id].get('cluster_ids')
+        if ids is not None:
+            h.update(np.ascontiguousarray(ids, dtype=float).tobytes())
+    fingerprint = h.hexdigest()
+
+    stored = [data_dict[b].get('wf_cluster_info', {}).get('fingerprint') for b in birds]
+    if not overwrite and stored and all(fp == fingerprint for fp in stored):
+        print('  cell-type clusters are up to date (same settings and features): '
+              'kept. Pass overwrite=True to refit anyway.')
+        return data_dict
+
+    # old labels: drop the k-means ones, and clusters for sessions no longer included
+    for bird in birds:
+        for session_id in data_dict[bird]['all_sessions']:
+            session_data = data_dict[bird][session_id]
+            for old_key in ('excitatory_idx', 'inhibitory_idx'):
+                session_data.pop(old_key, None)
+            if session_data.get(source) is None:
+                for key in ('wf_cluster', 'wf_cluster_prob', 'wf_cluster_logpdf'):
+                    session_data.pop(key, None)
+    pol = feats['polarity']
+
+    # spread cutoff: cells spreading further are treated as noise, not fit
+    too_spread = np.zeros(n_total, bool)
+    spread_key, spread_max = spread_cutoff if spread_cutoff else (None, None)
+    if spread_key is not None and spread_key in feats:
+        v = np.asarray(feats[spread_key], dtype=float)
+        has = np.isfinite(pol) & np.isfinite(v)
+        q = np.percentile(v[has], [50, 90, 95, 99]) if has.any() else [np.nan] * 4
+        print(f"\n  {spread_key} across cells with a waveform: median {q[0]:.0f}, "
+              f"90th {q[1]:.0f}, 95th {q[2]:.0f}, 99th {q[3]:.0f}")
+        if spread_max is not None:
+            too_spread = has & (v > spread_max)
+
+    fit_kw = dict(features=features, max_k=max_k, min_frac_stable=min_frac_stable,
+                  seed=seed, polarities=polarities, exclude=too_spread)
+    # number of clusters: fixed, or the lowest BIC
+    if n_clusters is None:
+        res = cluster_negative_units(feats, n_clusters=1, **fit_kw)
+        if not res['bic']:
+            print('  too few cells to choose k by BIC: nothing clustered')
+            return data_dict
+        n_clusters = min(res['bic'], key=res['bic'].get)
+    res = cluster_negative_units(
+        feats, n_clusters=n_clusters, outlier_pct=outlier_pct, **fit_kw)
+
+    # labels: polarity groups first, then confident, non-outlier assignments,
+    # then the spread cutoff last so it overrides everything
+    in_pol = np.isin(pol, polarities)
+    labels = np.full(n_total, -4)
+    labels[(pol == 1) & ~in_pol] = -2
+    labels[(pol == 0) & ~in_pol] = -3
+    labels[in_pol] = -1
+    prob = np.full(n_total, np.nan)
+    fit = res['clustered']
+    if fit.any():
+        prob[fit] = np.max(res['prob'][fit], axis=1)
+        confident = fit & (prob >= min_posterior) & ~res['outlier']
+        labels[confident] = res['labels'][confident]
+        labels[res['outlier']] = -5
+    labels[too_spread] = -6
+
+    # summary
+    print(f"\n  waveform clustering: {n_total} cells from {len(session_keys)} sessions, "
+          f"features {[k for k, _ in features]}")
+    for key, n_bad in res['n_nonpos'].items():
+        if n_bad:
+            print(f'    {n_bad} cells in the fitted set have {key} <= 0 (not log-scalable): unclassified')
+    if res['bic']:
+        best = min(res['bic'], key=res['bic'].get)
+        print('    GMM BIC by k: ' + ', '.join(f'{k}: {v:.0f}' for k, v in res['bic'].items())
+              + f'  (lowest at k={best}; using k={n_clusters})')
+    cluster_summary = {}
+    for k in range(n_clusters):
+        m = labels == k
+        med = {}
+        for d, (key, lg) in enumerate(features):
+            v = np.median(res['X'][m, d]) if m.any() else np.nan
+            med[key] = 10 ** v if lg else v
+        cluster_summary[k] = dict(n=int(m.sum()), median=med)
+        # a GMM with enough components gives a clump of extreme cells its own
+        # small cluster, where they no longer look like outliers; real classes
+        # can be small too, so flag rather than drop
+        small = m.sum() < 0.02 * max(fit.sum(), 1)
+        print(f'    cluster {k}: n={m.sum()}, median '
+              + ', '.join(f'{key} {v:.3g}' for key, v in med.items())
+              + ('   <- under 2% of fitted cells: check whether these are outliers' if small else ''))
+    n_low = int(np.sum(fit & (prob < min_posterior) & ~res['outlier']))
+    print(f'    fit but posterior < {min_posterior}: {n_low}; '
+          + ', '.join(f'code {c}: {int(np.sum(labels == c))}' for c in sorted(WF_CLUSTER_CODES)))
+
+    # why the -1 cells are unclassified (a cell can have several reasons)
+    unc = labels == -1
+    if unc.any():
+        reasons = {f'posterior < {min_posterior}': unc & fit & (prob < min_posterior)}
+        not_fit = unc & ~fit
+        for d, (key, lg) in enumerate(features):
+            reasons[f'no {key}' + (' (<= 0, log)' if lg else '')] = not_fit & ~np.isfinite(res['X'][:, d])
+        if min_frac_stable > 0 and 'frac_stable' in feats:
+            fs_ = np.asarray(feats['frac_stable'], dtype=float)
+            reasons[f'frac_stable < {min_frac_stable}'] = not_fit & ~(fs_ >= min_frac_stable)
+        if 'peak_shank_mismatch' in feats:
+            reasons['peak channel on another shank'] = not_fit & np.asarray(
+                feats['peak_shank_mismatch']).astype(bool)
+        print(f'    unclassified (-1), n={int(unc.sum())}: '
+              + ', '.join(f'{name} {int(m.sum())}' for name, m in reasons.items() if m.any()))
+        if fit.any():
+            q = np.percentile(prob[fit], [10, 25, 50])
+            print(f'    posterior of fitted cells: 10th pct {q[0]:.2f}, 25th {q[1]:.2f}, median {q[2]:.2f}')
+
+    # split back into sessions, checking alignment against cluster_ids
+    bounds = np.cumsum([0] + session_sizes)
+    per_bird = {}
+    for i, (bird, session_id) in enumerate(session_keys):
+        rows = slice(bounds[i], bounds[i + 1])
+        session_data = data_dict[bird][session_id]
+        expected_ids = session_data.get('cluster_ids')
+        if expected_ids is not None and 'cluster_id' in feats:
+            ids = feats['cluster_id'][rows].astype(int)
+            if not np.array_equal(ids, np.asarray(expected_ids).astype(int).ravel()):
+                print(f"    WARNING {bird}_{session_id}: feature rows don't match 'cluster_ids'; "
+                      f"wf_cluster not saved (re-run collect_waveform_data with overwrite=True)")
+                for key in ('wf_cluster', 'wf_cluster_prob', 'wf_cluster_logpdf'):
+                    session_data.pop(key, None)
+                continue
+        session_data['wf_cluster'] = labels[rows].copy()
+        session_data['wf_cluster_prob'] = prob[rows].copy()
+        session_data['wf_cluster_logpdf'] = res['logpdf'][rows].copy()
+        per_bird.setdefault(bird, []).append(labels[rows])
+
+    info = dict(settings=settings, fingerprint=fingerprint,
+                source=source, features=features, n_clusters=int(n_clusters),
+                polarities=tuple(polarities), bic=dict(res['bic']),
+                min_posterior=min_posterior, outlier_pct=outlier_pct,
+                logpdf_threshold=res['logpdf_threshold'], spread_cutoff=spread_cutoff,
+                min_frac_stable=min_frac_stable, seed=seed, codes=dict(WF_CLUSTER_CODES),
+                n_cells=n_total, cluster_summary=cluster_summary)
+    for bird in birds:
+        data_dict[bird]['all_wf_cluster'] = (np.concatenate(per_bird[bird]) if bird in per_bird
+                                             else np.asarray([], dtype=int))
+        data_dict[bird]['wf_cluster_info'] = info
+    return data_dict
 
 
 ''' stim-related analyses: may move or delete '''
@@ -1011,29 +1588,3 @@ def trial_trial_correlations(filt_data, templates,
         all_correlations[i] = corr_composite
 
     return all_correlations, t_windows
-
-
-def get_bird_wf_features(data_dict, bird, feature_key='wf_features_v2'):
-    '''
-    All v2 waveform features for one bird, concatenated across its sessions.
-
-    Each value is a (n_cells,) array. Rows follow session order, and within a
-    session the same kept cells as aligned_spikes.npy and cluster_ids.
-    'session' and 'cluster_id' say which cell each row is.
-    '''
-    pooled = {}
-    sessions = []
-    for session_id in data_dict[bird]['all_sessions']:
-        session_feats = data_dict[bird][session_id].get(feature_key)
-        if session_feats is None:          # no ephys, or v2 not computed yet
-            continue
-        n_cells = len(session_feats['polarity'])
-        for key, values in session_feats.items():
-            # per-cell arrays only (skips stability_chunks and other non-array entries)
-            if isinstance(values, np.ndarray) and values.shape[:1] == (n_cells,):
-                pooled.setdefault(key, []).append(values)
-        sessions.append(np.full(n_cells, session_id, dtype=object))
-
-    bird_feats = {key: np.concatenate(arrays) for key, arrays in pooled.items()}
-    bird_feats['session'] = np.concatenate(sessions) if sessions else np.array([])
-    return bird_feats

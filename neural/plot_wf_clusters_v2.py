@@ -42,7 +42,7 @@ FIG_SUFFIX = '_v2' if FEATURE_KEY.endswith('_v2') else '_v1'
 # 2D panels. Examples:
 #   ['stable_rate', 'width_ms', 'weighted_dist_um']   rate, width, spread
 #   ['stable_rate', 'width_ms', 'asymmetry']          like the original plot
-FEATURES = ['pk_trough_ratio', 'width_ms', 'asymmetry']
+FEATURES = ['stable_rate', 'width_ms', 'weighted_dist_um']
 
 # label, log10 scale, fixed limits (in real units) for each feature. Keys not
 # listed here are plotted on a linear scale with automatic limits.
@@ -53,7 +53,7 @@ FEATURE_INFO = {
     'half_width_ms':    ('half-width (ms)', False, (0, 0.6)),
     'asymmetry':        ('spike asymmetry', False, (-1, 1.02)),
     'decay_um':         ('spread, decay length (um)', True, (2, 300)),
-    'weighted_dist_um': ('spread, weighted distance (um)', True, (2, 300)),
+    'weighted_dist_um': ('spread, weighted distance (um)', True, (2, 75)),
     'extent_um':        ('spread, extent (um)', False, (0, 300)),
     'n_ch_above':       ('channels above threshold', False, (0, 30)),
     'pk_trough_ratio':  ('peak / |trough|', True, (0.05, 20)),

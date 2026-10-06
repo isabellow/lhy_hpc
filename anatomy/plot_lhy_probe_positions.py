@@ -27,4 +27,4 @@ fig, ax, avg = lhy_3d_plots.plot_tracks_and_lhy(rois_by_bird,
                                                 colors=bird_colors_dict, 
                                                 show_bird_lhy=False)
 
-fig.savefig(f'{save_figs_dir}probe_tracks_lhy_alt.png', dpi=400, bbox_inches='tight')
+fig.savefig(f'{save_figs_dir}probe_tracks_lhy.png', dpi=400, bbox_inches='tight')

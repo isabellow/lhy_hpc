@@ -88,6 +88,8 @@ from lhy_roi_gui import launch
 # --------------------------------------------------------------------------- #
 #  PARAMETERS                                                                  #
 # --------------------------------------------------------------------------- #
+hist_root = 'Z:/Isabel/histology/lhy_implants/'
+data_root = 'Z:/Isabel/data/lhy_implants/'
 bird = 'LMN86'
 # bird = 'LIM64' 
 # bird = 'TRQ82' 
@@ -95,8 +97,22 @@ bird = 'LMN86'
 hist_folder = '20260915_090644_980'
 # hist_folder = 'bad_model'
 # hist_folder = '20260804_091518_518'
-hist_root = 'Z:/Isabel/histology/lhy_implants/'
-data_root = 'Z:/Isabel/data/lhy_implants/'
+
+# probe shank labels, as in the anatomy sheet (shank A = smallest x in
+# channel_positions.npy).  Keys 1-8 pick the shank to trace.
+shank_labels = ['A']
+# shank_labels = ['A', 'B', 'C', 'D']
+
+# which landmark sets AP:
+#   'ac'    The anterior commissure, via section counting. This makes
+#           AP measurements more accurate at depths close to the AC.
+#   'hp'    The DM/DL marks, via a fit to hippocampal width. This makes 
+#           AP measurements more accurate near the surface.
+#   'shear' use BOTH: the AC pins the deep end, the DM/DL marks pin the
+#           surface, and every annotation is corrected in proportion to its
+#           own depth, per hemisphere.  This is the one to use for comparing
+#           AP across birds.  Needs ac_dv_um; falls back to 'hp' without it.
+ap_anchor = 'ac'
 
 # folder holding the Slide1-N_Region000M_Channel395 nm_Seq0008.nd2 files
 hist_dir = f'{hist_root}{bird}/{hist_folder}/'
@@ -169,10 +185,6 @@ slide_axis_signs = None
 inset_width_px = 380
 slide_downsample = 4
 
-# probe shank labels, as in the anatomy sheet (shank A = smallest x in
-# channel_positions.npy).  Keys 1-8 pick the shank to trace.
-shank_labels = ['A']
-# shank_labels = ['A', 'B', 'C', 'D']
 
 # --- series ---------------------------------------------------------------- #
 # These override whatever is stored in the JSON whenever they are not None, so
@@ -194,7 +206,7 @@ ap_sign = -1
 ac_section = None
 
 # AP of the AC relative to lambda, um -- ANT_COM_AP in get_probe_coords_lhy.py
-ac_ap_um = 900
+ac_ap_um = 1400
 
 # hippocampus plateau width, um.  Hippocampus size varies enough between
 # birds to bias the width -> AP inversion badly, so by default each bird's own
@@ -212,17 +224,6 @@ hp_L_um = 'auto'
 # between the two AP estimates (AC vs hippocampal width) into a section-angle
 # estimate in rois.ap_calibration().  None = report the offset only.
 ac_dv_um = None
-
-# which landmark sets AP:
-#   'ac'    The anterior commissure, via section counting. This makes
-#           AP measurements more accurate at depths close to the AC.
-#   'hp'    The DM/DL marks, via a fit to hippocampal width. This makes 
-#           AP measurements more accurate near the surface.
-#   'shear' use BOTH: the AC pins the deep end, the DM/DL marks pin the
-#           surface, and every annotation is corrected in proportion to its
-#           own depth, per hemisphere.  This is the one to use for comparing
-#           AP across birds.  Needs ac_dv_um; falls back to 'hp' without it.
-ap_anchor = 'ac'
 
 # the AC in the OTHER hemisphere, if slicing yaw puts it on a different
 # section: (slide, region), or None to use ac_section for both.  With

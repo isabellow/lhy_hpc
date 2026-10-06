@@ -24,7 +24,7 @@ Conventions (brain frame, um):
 '''
 
 # AP position of the anterior commissure relative to lambda, in um.
-ANT_COM_AP = 900
+ANT_COM_AP = 1400
 
 '''
 Utility functions for channel mapping

@@ -30,9 +30,24 @@ Order of operations:
     -> ported from neural/save_all_wf_data.py
     -> needs: 'preprocessed_data', 'all_sessions' (step 1), 'keep_cells' (step 1b)
     
-    data_dict[bird][session]['ephys_id'], ['waveform_props'], ['excitatory_idx'], ['inhibitory_idx']
+    data_dict[bird][session]['ephys_id'], ['waveform_props'], ['wf_features'], ['wf_features_v2']
     data_dict[bird][session]['ephys_id']['ks_path'] # todo
     data_dict[bird]['all_waveform_props']
+
+    Slow (spike-train features: ACG fits); only sessions without features
+    are computed unless overwrite=True.
+
+2b. cluster_cells()
+    -> waveform_analysis.cluster_waveform_features, with WF_CLUSTER_SETTINGS
+    -> needs: 'wf_features_v2' (step 2), 'cluster_ids' (step 1b)
+
+    data_dict[bird][session]['wf_cluster'], ['wf_cluster_prob'], ['wf_cluster_logpdf']
+    data_dict[bird]['all_wf_cluster'], ['wf_cluster_info']
+
+    Fast, and skips itself unless WF_CLUSTER_SETTINGS or the features have
+    changed (or overwrite=True). To re-cluster without running anything
+    else: recluster(). 'wf_cluster' replaces the old 'excitatory_idx' /
+    'inhibitory_idx' k-means labels, which are removed when clustering runs.
 
 3. get_probe_coords.get_anatomy_info() + save_cell_positions()
     -> existing functions, anatomy/get_probe_coords.py
@@ -65,7 +80,7 @@ Order of operations:
     -> ported from neural/save_pop_vectors.py
     -> needs: 
         'pred_date' (step 1),
-        'ephys_id' + 'waveform_props' + 'excitatory_idx' (step 2)
+        'ephys_id' + 'waveform_props' (step 2)
         optionally 'channel_pos' (step 3, if proj_only=True) # todo check if also needs stim_resp_idx
     
     data_dict[bird][session]['barcode_dict'] 
@@ -147,6 +162,33 @@ lhy_tol_um = 50.0
 
 # video frame rate, for the spike_amplitudes frame conventions
 WF_FPS = 50
+
+# ephys sample rate, for KS spike_times -> seconds
+EPHYS_FS = 30000
+
+# Cell-type clustering (waveform_analysis.cluster_waveform_features). Anything
+# set here overrides the function's defaults (the WF_* constants at the top of
+# its section in waveform_analysis.py); leave a key out to use the default.
+#   features: list of (key, log10); n_clusters: int or None (lowest BIC);
+#   polarities: (-1,) or (-1, 0, 1); spread_cutoff: (feature, max or None)
+WF_CLUSTER_SETTINGS = dict(
+    source='wf_features_v2',
+    features=[
+        ('stable_rate', True),       # firing rate while well recorded
+        ('cv2', False),              # irregularity of firing
+        ('pk_trough_ratio', True),   # polarity, as a continuous feature
+        ('width_ms', False),         # dominant phase to opposite lobe
+        ('deriv_ratio', False),      # already a log10 ratio, so no log flag
+        ('lobe_log_ratio', False),   # asymmetry without the pile-up at +-1
+    ],
+    polarities=(-1, 0, 1),
+    n_clusters=4,                 # read the BIC curve first, then fix it
+    max_k=8,
+    min_posterior=0.9,
+    outlier_pct=1.0,
+    min_frac_stable=0.05,
+    spread_cutoff=('weighted_dist_um', 75),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +289,42 @@ def get_or_create_data_dict(root_dir, data_file, new_bird_ids=None):
 # ---------------------------------------------------------------------------
 # Step 2: waveform properties (ported from neural/save_all_wf_data.py)
 # ---------------------------------------------------------------------------
-def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
+def _saved_spike_train(session_data, unit_ids):
+    '''
+    Spike-train features already in the session's feature dict, as full-length
+    arrays aligned to unit_ids (nan for cells with nothing saved, e.g. cells
+    outside the keep mask). None if there is nothing usable.
+    '''
+    for key in ('wf_features_v2', 'wf_features'):
+        saved = session_data.get(key)
+        if saved is not None and 'cluster_id' in saved and \
+                all(k in saved for k in waveform_analysis.TRAIN_KEYS):
+            break
+    else:
+        return None
+    row = {int(c): i for i, c in enumerate(np.asarray(saved['cluster_id']).astype(int))}
+    out = {k: np.full(len(unit_ids), np.nan) for k in waveform_analysis.TRAIN_KEYS}
+    for u, uid in enumerate(np.asarray(unit_ids).astype(int)):
+        i = row.get(int(uid))
+        if i is not None:
+            for k in out:
+                out[k][u] = saved[k][i]
+    return out
+
+
+def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False,
+                          reuse_spike_train=False):
+    '''
+    Waveform, stability and spike-train features for every session.
+
+    overwrite : recompute sessions that already have features
+    reuse_spike_train : when recomputing, take the slow spike-train features
+        (ISIs, CV2, ACG fits) from the session's saved features instead of
+        refitting, matched by cluster ID; any cell without a saved value is
+        computed. Use after changing only waveform-shape code. Don't use after
+        re-curating in phy or changing the stability settings, since the
+        saved values would no longer match the spike trains.
+    '''
     for bird in bird_ids:
         print(f'\ncollecting waveform data for {bird}')
         bird_dir = f"{root_dir}{bird}/"
@@ -334,8 +411,10 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
             # Depends only on spikes, so it is shared by both waveform versions.
             data_dir = f"{session_dir}behavior_data/"
             frame_file = f"{data_dir}frame_times.npy"
+            frame_t = None
             if os.path.isfile(frame_file):
-                n_frames = np.squeeze(np.load(frame_file)).size
+                frame_t = np.squeeze(np.load(frame_file))
+                n_frames = frame_t.size
                 amp_data = spike_amplitudes.load_spike_amplitudes(
                     session_dir, data_dir, ks_dir, unit_ids, n_frames, fps=WF_FPS)
                 no_spk = [uid for uid, (fr, _) in zip(unit_ids, amp_data) if fr.size == 0]
@@ -352,6 +431,34 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
                 stab['chunks'] = [None] * n_cells
             chunks = stab.pop('chunks')
 
+            # spike-train features (ISIs, CV2, ACG fit) from KS spike times, using
+            # only each unit's stable stretches, so missed spikes during drift
+            # don't lengthen ISIs; whole recording if there is no behavior
+            ks_path = f"{session_dir}{ks_dir}"
+            spike_s = np.squeeze(np.load(f"{ks_path}spike_times.npy")) / EPHYS_FS
+            spike_clu = np.squeeze(np.load(f"{ks_path}spike_clusters.npy"))
+            if frame_t is not None:
+                intervals = [waveform_analysis.stable_intervals(c, frame_t, 1 / WF_FPS)
+                             for c in chunks]
+            else:
+                intervals = None
+            train = None
+            if reuse_spike_train:
+                train = _saved_spike_train(data_dict[bird][session_id], unit_ids)
+            if train is None:
+                train = waveform_analysis.spike_train_features_for_units(
+                    spike_s, spike_clu, unit_ids, intervals)
+            else:
+                todo = ~np.isfinite(train['n_spikes_used'])   # cells with nothing saved
+                if todo.any():
+                    redo = waveform_analysis.spike_train_features_for_units(
+                        spike_s, spike_clu, unit_ids[todo],
+                        None if intervals is None else [iv for iv, t in zip(intervals, todo) if t])
+                    for k in train:
+                        train[k][todo] = redo[k]
+                print(f'  {bird}_{session_id}: spike-train features reused for '
+                      f'{int((~todo).sum())}/{n_cells} cells')
+
             # Shape + spatial features, once per waveform version present:
             #   'waveFormsMean'    -> 'wf_features'     (original extraction)
             #   'waveFormsMean_v2' -> 'wf_features_v2'  (high-pass only, re-aligned;
@@ -359,7 +466,6 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
             # Computed in KS channel order (rows of channel_positions.npy); custom
             # probe order never enters. Shanks use the same rule as
             # flag_excluded_cells, so features and keep mask agree on shanks.
-            ks_path = f"{session_dir}{ks_dir}"
             versions = [('waveFormsMean', 'wf_features')]
             if 'waveFormsMean_v2' in waveform_struct:
                 versions.append(('waveFormsMean_v2', 'wf_features_v2'))
@@ -405,25 +511,11 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
                         feats['frac_shifted'] = np.sum(np.abs(shift) > 2, axis=0) / n_used
 
                 feats.update(stab)
+                feats.update(train)
                 feats['cluster_id'] = unit_ids.astype(float)
                 wf_feat = {k: np.asarray(v)[keep] for k, v in feats.items()}
                 wf_feat['stability_chunks'] = [chunks[i] for i in np.arange(n_cells)[keep]]
                 data_dict[bird][session_id][feat_name] = wf_feat
-
-    # re-cluster excitatory/inhibitory across ALL sessions any time new data is added
-    all_waveform_props = []
-    sess_idx = 0
-    session_index = np.asarray([]).astype(int)
-    session_keys = []  # (bird, session_id) in the same order as session_index groups
-    for bird in bird_ids:
-        for session_id in data_dict[bird]['all_sessions']:
-            if 'waveform_props' in data_dict[bird][session_id]:
-                wp = data_dict[bird][session_id]['waveform_props']
-                n_cells = wp.shape[1]
-                all_waveform_props = wp if len(all_waveform_props) == 0 else np.column_stack((all_waveform_props, wp))
-                session_index = np.append(session_index, np.full(n_cells, sess_idx))
-                session_keys.append((bird, session_id))
-                sess_idx += 1
 
     # per-bird concatenation across that bird's sessions
     for bird in bird_ids:
@@ -439,14 +531,33 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
         else:
             data_dict[bird]['all_waveform_props'] = np.asarray([])
 
-    if len(all_waveform_props) > 0:
-        asymm, width, log_fr = all_waveform_props[0], all_waveform_props[1], all_waveform_props[2]
-        exc_idx_all, inhib_idx_all = waveform_analysis.clu_waveforms_kmeans(width, asymm, log_fr)
-        for i, (bird, session_id) in enumerate(session_keys):
-            data_dict[bird][session_id]['excitatory_idx'] = exc_idx_all[session_index == i]
-            data_dict[bird][session_id]['inhibitory_idx'] = inhib_idx_all[session_index == i]
-
     return data_dict
+
+
+# ---------------------------------------------------------------------------
+# Step 2b: cell-type clustering
+# ---------------------------------------------------------------------------
+def cluster_cells(data_dict, overwrite=False):
+    '''
+    GMM cell-type labels for every cell, from the features collect_waveform_data
+    saved (waveform_analysis.cluster_waveform_features with WF_CLUSTER_SETTINGS).
+    Skips itself when neither the settings nor the features have changed since
+    the last run, so it is cheap to call on every pipeline run.
+    '''
+    return waveform_analysis.cluster_waveform_features(
+        data_dict, overwrite=overwrite, **WF_CLUSTER_SETTINGS)
+
+
+def recluster(overwrite=False, data_file=DATA_FILE):
+    '''
+    Re-cluster from the saved dict without running any other step, e.g. after
+    editing WF_CLUSTER_SETTINGS. Loads the dict, clusters, saves it.
+    '''
+    data_dict = np.load(data_file, allow_pickle=True).item()
+    data_dict = cluster_cells(data_dict, overwrite=overwrite)
+    np.save(data_file, data_dict)
+    return data_dict
+
 
 # ---------------------------------------------------------------------------
 # Step 4: behavior-aligned spikes per session (ported from behavior/save_aligned_spikes.py)
@@ -967,7 +1078,8 @@ def collect_cache_shuffle_activity(data_dict, bird_ids, root_dir, overwrite=Fals
 # ---------------------------------------------------------------------------
 def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
                                     get_stim_data=False, get_lhy_bounds=True,
-                                    overwrite=False,
+                                    overwrite=False, overwrite_clusters=False,
+                                    reuse_spike_train=False,
                                     drop_excluded_shanks=True):
     '''
     Full pipeline
@@ -981,6 +1093,16 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
         Set False to keep them; the shank assignment is still recorded either way.
         Changing this flag invalidates all cached per-cell fields, so re-run
         with overwrite=True after changing it.
+    overwrite : recompute every step's cached results, including the slow
+        waveform / spike-train features
+    reuse_spike_train : with overwrite=True, keep the saved spike-train
+        features (the slow ACG fits) and recompute everything else; see
+        collect_waveform_data
+    overwrite_clusters : refit the cell-type clusters even if neither
+        WF_CLUSTER_SETTINGS nor the features changed (clustering already
+        reruns by itself when either does). Clustering is deterministic, so
+        overwrite alone doesn't force it: refitting unchanged inputs gives the
+        same labels.
     '''
     data_dict, bird_ids = get_or_create_data_dict(ROOT_DIR, DATA_FILE, new_bird_ids)
 
@@ -991,7 +1113,11 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
     np.save(DATA_FILE, data_dict)
 
     print("\n=== waveform properties ===")
-    data_dict = collect_waveform_data(data_dict, bird_ids, ROOT_DIR, overwrite=overwrite)
+    data_dict = collect_waveform_data(data_dict, bird_ids, ROOT_DIR, overwrite=overwrite, reuse_spike_train=True)
+    np.save(DATA_FILE, data_dict)
+
+    print("\n=== cell-type clustering ===")
+    data_dict = cluster_cells(data_dict, overwrite=overwrite_clusters)
     np.save(DATA_FILE, data_dict)
 
     print("\n=== anatomy / channel positions ===")
@@ -1030,7 +1156,10 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
 
 if __name__ == "__main__":
     # Example: add a couple of new birds to an existing (or new) struct
-    build_or_update_session_data(new_bird_ids=None, overwrite=True)
+    build_or_update_session_data(new_bird_ids=None, overwrite=False)
 
 #     # Example: just pick up new sessions for birds already in the dict
 #     build_or_update_session_data(new_bird_ids=None)
+
+#     # Example: re-cluster only, e.g. after editing WF_CLUSTER_SETTINGS
+#     recluster()

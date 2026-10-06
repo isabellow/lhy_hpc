@@ -18,6 +18,11 @@ Usage
     # one unit
     python plot_cell_ephys.py ... --cluster-id 137
 
+    # color each unit by its saved GMM cluster, and report its saved rate /
+    # width / spread ('wf_cluster' and 'wf_features_v2' in the data dict)
+    python plot_cell_ephys.py ... --data-file .../good_session_data.npy \
+                              --bird LIM63 --session-id 240610
+
 From a notebook:
 
     from plot_cell_ephys import run_session
@@ -338,61 +343,6 @@ def waveform_baseline(wf, wf_t, before_ms=-0.5):
     return np.median(wf[m], axis=0)
 
 
-def _half_width_ms(wf, fs):
-    """Full width at half maximum of the dominant peak, in ms.
-
-    Polarity-agnostic, so it can be compared across up- and down-going spikes
-    (unlike trough-to-peak, which is only defined for down-going ones).
-    """
-    i = int(np.argmax(np.abs(wf)))
-    half = wf[i] / 2.0
-    sgn = np.sign(wf[i])
-
-    def cross(step):
-        j = i
-        while 0 <= j + step < wf.size and sgn * (wf[j + step] - half) > 0:
-            j += step
-        k = j + step
-        if not (0 <= k < wf.size):
-            return float(j)
-        denom = wf[k] - wf[j]
-        return float(j) if denom == 0 else j + (half - wf[j]) / denom * step
-
-    return (cross(1) - cross(-1)) / fs * 1e3
-
-
-def waveform_metrics(mean_wf, wf_t, fs):
-    """Polarity, trough/peak width, and half-width of a mean waveform.
-
-    A cell is called 'positive' when the largest excursion from baseline is
-    upward. For those, width is measured peak-to-following-trough, i.e. the
-    mirror image of the Payne et al. trough-to-following-peak definition.
-    Widths are therefore NOT comparable across polarities -- see half_width_ms
-    for a measure that is.
-    """
-    wf = np.asarray(mean_wf, float) - waveform_baseline(mean_wf, wf_t)
-    positive = wf.max() > abs(wf.min())
-    first = int(np.argmax(wf)) if positive else int(np.argmin(wf))
-    if first >= wf.size - 1:
-        width = np.nan
-    else:
-        rest = wf[first:]
-        second = int(np.argmin(rest)) if positive else int(np.argmax(rest))
-        width = second / fs * 1e3
-    return dict(polarity="positive" if positive else "negative",
-                spike_width_ms=width,
-                half_width_ms=_half_width_ms(wf, fs))
-
-
-def channel_extent(mean_all, wf_t, thresh_uv=20.0):
-    """How many channels carry the spike: peak-to-peak above thresh_uv."""
-    if mean_all is None:
-        return -1, None
-    m = np.asarray(mean_all, float) - waveform_baseline(mean_all, wf_t)
-    amps = m.max(axis=0) - m.min(axis=0)
-    return int(np.sum(amps > thresh_uv)), amps
-
-
 # --------------------------------------------------------------------------- #
 # plotting
 # --------------------------------------------------------------------------- #
@@ -405,7 +355,41 @@ def _scalebar(ax, x, y, dx, dy, xlabel, ylabel, color="k", lw=1.5, fs=7):
             fontsize=fs, color=color, clip_on=False)
 
 
-def plot_fig1d(data, n_show=20, color=None, width_thresh_ms=0.2,
+# per-unit values reported from the data dict's saved features, not recomputed here
+SAVED_KEYS = ["polarity", "width_ms", "half_width_ms", "stable_rate", "weighted_dist_um"]
+
+
+def saved_unit_features(data_dict, bird, session_id):
+    """{KS cluster_id: saved values} from the data dict (a loaded dict or its .npy path).
+
+    Each unit gets its GMM group ('wf_cluster' name and color, the same groups and
+    colors as plot_feature_grid / plot_feature_vs_depth) and its SAVED_KEYS values
+    from the saved features. Units hidden there (e.g. unclassified with
+    SHOW_UNCLASSIFIED off) get no group and are drawn in gray. Returns {} if the
+    session has no saved features.
+    """
+    from plot_feature_grid import FEATURE_KEY, groups_for
+    if isinstance(data_dict, (str, Path)):
+        data_dict = np.load(data_dict, allow_pickle=True).item()
+    session_data = data_dict[bird][session_id]
+    feats = session_data.get(FEATURE_KEY)
+    if feats is None:
+        print(f"{bird}_{session_id}: no '{FEATURE_KEY}' saved; units drawn in gray")
+        return {}
+    ids = np.asarray(session_data["cluster_ids"]).astype(int)   # row order of the features
+    assert ids.size == len(feats["polarity"]), "'cluster_ids' and the features don't line up"
+    out = {int(c): dict(wf_cluster="", color=None,
+                        **{k: float(feats[k][i]) if k in feats else np.nan for k in SAVED_KEYS})
+           for i, c in enumerate(ids)}
+    labels = session_data.get("wf_cluster")
+    if labels is not None:
+        for name, m, color in groups_for(feats, np.asarray(labels)):
+            for c in ids[m]:
+                out[int(c)].update(wf_cluster=name.split(" (n=")[0], color=color)
+    return out
+
+
+def plot_fig1d(data, n_show=20, color=None,
                figsize=(9, 2.6), rasterize=True, scalebar_step_uv=25):
     """Draw the Fig. 1D-style panel from one unit's data dict.
 
@@ -424,12 +408,7 @@ def plot_fig1d(data, n_show=20, color=None, width_thresh_ms=0.2,
     trace = data["trace"] - np.median(data["trace"])
 
     if color is None:
-        if data.get("polarity") == "positive":
-            color = "xkcd:saffron"
-        elif data["spike_width_ms"] >= width_thresh_ms:
-            color = "xkcd:scarlet"
-        else:
-            color = "xkcd:cobalt blue"
+        color = "xkcd:gray"     # no saved GMM cluster for this unit
 
     fig = plt.figure(figsize=figsize)
     gs = fig.add_gridspec(1, 2, width_ratios=[4, 1], wspace=0.08)
@@ -478,13 +457,13 @@ def plot_fig1d(data, n_show=20, color=None, width_thresh_ms=0.2,
     _scalebar(ax_wf, wf_t[0] + 0.1, bar_y, 1.0, bar_uv,
               "1 ms", f"{bar_uv:g} µV")
 
-    extent = data.get("n_channels_extent", -1)
     fig.suptitle(
         f"cell {data['cluster_id']}"
         f"{' (' + data['label'] + ')' if data['label'] else ''}   "
-        f"ch {data['max_channel_name']}   {data['mean_rate_hz']:.1f} Hz   "
-        f"n = {data['n_spikes']} spikes   width {data['spike_width_ms']:.2f} ms   "
-        + (f"extent {extent} ch" if extent >= 0 else ""),
+        f"{data['wf_cluster'] + '   ' if data.get('wf_cluster') else ''}"
+        f"ch {data['max_channel_name']}   {data['stable_rate']:.1f} Hz   "
+        f"n = {data['n_spikes']} spikes   width {data['width_ms']:.2f} ms   "
+        f"spread {data['weighted_dist_um']:.0f} µm",
         fontsize=8, y=1.02, x=0.02, ha="left")
     return fig
 
@@ -497,9 +476,13 @@ def run_session(intan_folder=None, si_folder=None, ks_dir=None, out_dir=None,
                 channel_ids=None, cmr=True, freq_min=300.0, freq_max=6000.0,
                 n_chunks=40, chunk_sec=1.0, n_wf=300, min_wf=20, n_show=20,
                 win_sec=4.0, window_mode="max", t_start=None,
-                artifact_uv=2000.0, peak_source="templates", extent_thresh_uv=20.0,
+                artifact_uv=2000.0, peak_source="templates", saved_features=None,
                 save_pdf=False, save_npz=False, summary_csv=True, verbose=True):
     """Make a figure for one unit or every good unit in a session.
+
+    saved_features : {cluster_id: dict} or None
+        from saved_unit_features: each unit's GMM group (color) and the saved
+        rate / width / spread reported in the title and summary. nan if None.
 
     Returns {cluster_id: data dict}.
     """
@@ -575,6 +558,8 @@ def run_session(intan_folder=None, si_folder=None, ks_dir=None, out_dir=None,
     results, low_wf = {}, []
     for n, c in enumerate(cids, 1):
         spk, ch = spikes[c], best_ch[c]
+        saved = (saved_features or {}).get(
+            c, dict(wf_cluster="", color=None, **{k: np.nan for k in SAVED_KEYS}))
         cands = window_candidates(spk, n_total, fs, win_sec=win_sec,
                                   mode=window_mode, t_start=t_start)
         s0, trace, window = read_trace_window(rec_filt, ch, cands, win_sec,
@@ -595,29 +580,24 @@ def run_session(intan_folder=None, si_folder=None, ks_dir=None, out_dir=None,
 
         in_win = spk[(spk >= s0) & (spk < s0 + trace.size)]
         wf_t = (np.arange(n_samp) - pre_samp) / fs * 1e3
-        extent, amps = channel_extent(pool[c]["mean_all_channels"], wf_t,
-                                      thresh_uv=extent_thresh_uv)
         data = dict(
             cluster_id=c, label=labels.get(c, ""), fs=fs,
             max_channel_index=ch, max_channel_id=rec.channel_ids[ch],
             max_channel_name=(str(names[ch]) if names is not None
                               else str(rec.channel_ids[ch])),
             n_spikes=int(spk.size), n_waveforms=int(wfs.shape[0]),
-            mean_rate_hz=float(spk.size / (n_total / fs)),
             trace=trace, trace_t=np.arange(trace.size) / fs,
             trace_start_s=s0 / fs, trace_spike_t=(in_win - s0) / fs,
             waveforms=wfs, mean_waveform=mean_wf,
             waveform_t=wf_t,
             mean_waveform_all_channels=pool[c]["mean_all_channels"],
             peak_to_peak_uv=float(np.ptp(mean_wf)),
-            n_channels_extent=extent,
-            channel_amplitudes_uv=amps,
-            **waveform_metrics(mean_wf, wf_t, fs),
+            **{k: v for k, v in saved.items() if k != "color"},
         )
         results[c] = data
 
         if out_dir is not None:
-            fig = plot_fig1d(data, n_show=n_show)
+            fig = plot_fig1d(data, n_show=n_show, color=saved["color"])
             stem = out_dir / f"cell_{c}_wf_trace"
             fig.savefig(f"{stem}.png", dpi=200, bbox_inches="tight")
             if save_pdf:
@@ -635,9 +615,9 @@ def run_session(intan_folder=None, si_folder=None, ks_dir=None, out_dir=None,
                       "or --chunk-sec for these.")
 
     if out_dir is not None and summary_csv and results:
-        cols = ["cluster_id", "label", "max_channel_name", "max_channel_index",
-                "n_spikes", "mean_rate_hz", "peak_to_peak_uv", "polarity",
-                "spike_width_ms", "half_width_ms", "n_channels_extent",
+        cols = ["cluster_id", "label", "wf_cluster", "max_channel_name", "max_channel_index",
+                "n_spikes", "stable_rate", "peak_to_peak_uv", "polarity",
+                "width_ms", "half_width_ms", "weighted_dist_um",
                 "n_waveforms", "trace_start_s"]
         with open(out_dir / "unit_summary.csv", "w", newline="") as f:
             w = csv.writer(f)
@@ -677,14 +657,24 @@ def main():
     p.add_argument("--t-start", type=float, default=None)
     p.add_argument("--peak-source", default="templates", choices=["templates", "raw"])
     p.add_argument("--artifact-uv", type=float, default=2000.0)
-    p.add_argument("--extent-thresh-uv", type=float, default=20.0,
-                   help="channel counts toward the extent if its mean waveform "
-                        "peak-to-peak exceeds this (default 20 uV)")
     p.add_argument("--no-cmr", action="store_true")
     p.add_argument("--pdf", action="store_true", help="also save vector PDFs")
     p.add_argument("--save-npz", action="store_true")
     p.add_argument("--quiet", action="store_true")
+    p.add_argument("--data-file", default=None,
+                   help="data dict (.npy) with saved 'wf_cluster' labels and features: "
+                        "colors units by GMM cluster and reports the saved rate / "
+                        "width / spread (needs --bird and --session-id)")
+    p.add_argument("--bird", default=None)
+    p.add_argument("--session-id", default=None)
     args = p.parse_args()
+    saved_features = None
+    if args.data_file:
+        if not (args.bird and args.session_id):
+            p.error("--data-file needs --bird and --session-id")
+        saved_features = saved_unit_features(args.data_file, args.bird, args.session_id)
+    else:
+        print("no --data-file: units drawn in gray, rate / width / spread reported as nan")
 
     matplotlib.use("Agg")
     run_session(
@@ -696,7 +686,7 @@ def main():
         min_wf=args.min_wf, n_show=args.n_show, win_sec=args.win_sec,
         window_mode=args.window_mode, t_start=args.t_start,
         peak_source=args.peak_source, artifact_uv=args.artifact_uv,
-        extent_thresh_uv=args.extent_thresh_uv,
+        saved_features=saved_features,
         save_pdf=args.pdf, save_npz=args.save_npz, verbose=not args.quiet,
     )
 
