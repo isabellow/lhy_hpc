@@ -329,45 +329,9 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
                     continue
             data_dict[bird][session_id]['waveform_props'] = waveform_props[:, keep]
 
-            # v2 features: polarity-aware shape + spatial footprint (KS channel
-            # order and positions), and amplitude-based stability. Stored
-            # separately so 'waveform_props' rows (asymm, width, log_fr) and
-            # everything downstream that indexes them are unchanged.
-            ks_path = f"{session_dir}{ks_dir}"
-            # All v2 features are computed in KS channel order (rows of
-            # channel_positions.npy); custom probe order never enters. Shanks
-            # use the same rule as flag_excluded_cells, so the spatial features
-            # and the keep mask agree on which shank a channel belongs to.
-            wfs_ks, ch_pos, chan_map = waveform_analysis.ks_channel_waveforms(waveform_struct, ks_path)
-            n_shanks = int(data_dict[bird].get('n_shanks', 1))
-            ks_shank = get_probe_coords_lhy.get_channel_shank(ch_pos, n_shanks)
-            feats = waveform_analysis.compute_unit_features(wfs_ks, ch_pos, shank=ks_shank)
-
-            # the v2 peak channel in each convention, and how it compares with
-            # max_site (MATLAB: whole 4 ms window; relocated to a sorted channel
-            # by load_wf_data), which is what the keep mask and cell_pos use
-            n_ch_native = len(ch_names)
-            native_to_custom = np.argsort(format_waveform_data.get_custom_sort_idx(ephys_dir))
-            shank_native = np.full(n_ch_native, -1)
-            shank_native[chan_map] = ks_shank
-            pk_ks = feats['peak_ch_ks']
-            has_pk = np.isfinite(pk_ks)
-            pk_native = np.full(n_cells, -1)
-            pk_native[has_pk] = chan_map[pk_ks[has_pk].astype(int)]
-            max_site_native = np.asarray(waveform_struct['max_site']).astype(int).ravel() - 1
-            feats['peak_ch_native'] = pk_native.astype(float)
-            feats['peak_ch_custom'] = np.where(has_pk, native_to_custom[pk_native], -1).astype(float)
-            feats['peak_matches_max_site'] = (pk_native == max_site_native).astype(float)
-            feats['peak_shank_mismatch'] = (has_pk & (shank_native[pk_native] !=
-                                                      shank_native[max_site_native])).astype(float)
-            n_diff = int(np.sum(has_pk & (pk_native != max_site_native)))
-            n_shank = int(feats['peak_shank_mismatch'].sum())
-            if n_diff:
-                print(f'  {bird}_{session_id}: v2 peak channel differs from max_site for '
-                      f'{n_diff}/{n_cells} cells ({n_shank} on a different shank)')
-
             # stability over the behavior session, via spike_amplitudes (per-spike
-            # KS files are loaded full length and cells picked by cluster ID)
+            # KS files are loaded full length and cells picked by cluster ID).
+            # Depends only on spikes, so it is shared by both waveform versions.
             data_dir = f"{session_dir}behavior_data/"
             frame_file = f"{data_dir}frame_times.npy"
             if os.path.isfile(frame_file):
@@ -387,11 +351,64 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
                          'rate_amp_rho', 'amp_drop']}
                 stab['chunks'] = [None] * n_cells
             chunks = stab.pop('chunks')
-            feats.update(stab)
-            feats['cluster_id'] = unit_ids.astype(float)
-            wf_feat = {k: np.asarray(v)[keep] for k, v in feats.items()}
-            wf_feat['stability_chunks'] = [chunks[i] for i in np.arange(n_cells)[keep]]
-            data_dict[bird][session_id]['wf_features'] = wf_feat
+
+            # Shape + spatial features, once per waveform version present:
+            #   'waveFormsMean'    -> 'wf_features'     (original extraction)
+            #   'waveFormsMean_v2' -> 'wf_features_v2'  (high-pass only, re-aligned;
+            #                                            addSessionWaveformsV2.m)
+            # Computed in KS channel order (rows of channel_positions.npy); custom
+            # probe order never enters. Shanks use the same rule as
+            # flag_excluded_cells, so features and keep mask agree on shanks.
+            ks_path = f"{session_dir}{ks_dir}"
+            versions = [('waveFormsMean', 'wf_features')]
+            if 'waveFormsMean_v2' in waveform_struct:
+                versions.append(('waveFormsMean_v2', 'wf_features_v2'))
+            n_shanks = int(data_dict[bird].get('n_shanks', 1))
+            n_ch_native = len(ch_names)
+            native_to_custom = np.argsort(format_waveform_data.get_custom_sort_idx(ephys_dir))
+            max_site_native = np.asarray(waveform_struct['max_site']).astype(int).ravel() - 1
+
+            for wf_key, feat_name in versions:
+                wfs_ks, ch_pos, chan_map = waveform_analysis.ks_channel_waveforms(
+                    waveform_struct, ks_path, key=wf_key)
+                ks_shank = get_probe_coords_lhy.get_channel_shank(ch_pos, n_shanks)
+                feats = waveform_analysis.compute_unit_features(wfs_ks, ch_pos, shank=ks_shank)
+
+                # peak channel in each convention, and how it compares with
+                # max_site (MATLAB: whole 4 ms window; relocated to a sorted
+                # channel by load_wf_data), which the keep mask and cell_pos use
+                shank_native = np.full(n_ch_native, -1)
+                shank_native[chan_map] = ks_shank
+                pk_ks = feats['peak_ch_ks']
+                has_pk = np.isfinite(pk_ks)
+                pk_native = np.full(n_cells, -1)
+                pk_native[has_pk] = chan_map[pk_ks[has_pk].astype(int)]
+                feats['peak_ch_native'] = pk_native.astype(float)
+                feats['peak_ch_custom'] = np.where(has_pk, native_to_custom[pk_native], -1).astype(float)
+                feats['peak_matches_max_site'] = (pk_native == max_site_native).astype(float)
+                feats['peak_shank_mismatch'] = (has_pk & (shank_native[pk_native] !=
+                                                          shank_native[max_site_native])).astype(float)
+                n_diff = int(np.sum(has_pk & (pk_native != max_site_native)))
+                n_shank = int(feats['peak_shank_mismatch'].sum())
+                if n_diff:
+                    print(f'  {bird}_{session_id} ({wf_key}): peak channel differs from max_site '
+                          f'for {n_diff}/{n_cells} cells ({n_shank} on a different shank)')
+
+                # v2 only: fraction of each unit's averaged spikes that were
+                # re-aligned by more than 2 samples (from the shift histograms)
+                if wf_key == 'waveFormsMean_v2' and 'spike_shift' in waveform_struct:
+                    shift = np.asarray(waveform_struct['spike_shift'], dtype=float)
+                    if shift.ndim == 1:                     # single unit
+                        shift = shift[:, None]
+                    n_used = np.sum(np.isfinite(shift), axis=0)
+                    with np.errstate(invalid='ignore'):
+                        feats['frac_shifted'] = np.sum(np.abs(shift) > 2, axis=0) / n_used
+
+                feats.update(stab)
+                feats['cluster_id'] = unit_ids.astype(float)
+                wf_feat = {k: np.asarray(v)[keep] for k, v in feats.items()}
+                wf_feat['stability_chunks'] = [chunks[i] for i in np.arange(n_cells)[keep]]
+                data_dict[bird][session_id][feat_name] = wf_feat
 
     # re-cluster excitatory/inhibitory across ALL sessions any time new data is added
     all_waveform_props = []
@@ -410,11 +427,17 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False):
 
     # per-bird concatenation across that bird's sessions
     for bird in bird_ids:
-        bird_props = [data_dict[bird][s]['waveform_props']
-                      for s in data_dict[bird]['all_sessions']
-                      if 'waveform_props' in data_dict[bird][s]]
-        data_dict[bird]['all_waveform_props'] = (np.column_stack(bird_props)
-                                                 if bird_props else np.asarray([]))
+        bird_props = []
+        for s in data_dict[bird]['all_sessions']:
+            session_data = data_dict[bird][s]
+            if 'waveform_props' not in session_data:
+                continue
+            bird_props.append(session_data['waveform_props'])
+
+        if bird_props:
+            data_dict[bird]['all_waveform_props'] = np.column_stack(bird_props)
+        else:
+            data_dict[bird]['all_waveform_props'] = np.asarray([])
 
     if len(all_waveform_props) > 0:
         asymm, width, log_fr = all_waveform_props[0], all_waveform_props[1], all_waveform_props[2]

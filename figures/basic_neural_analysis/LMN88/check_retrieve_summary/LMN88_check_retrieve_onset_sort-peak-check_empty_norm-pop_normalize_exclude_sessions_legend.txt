@@ -13,6 +13,6 @@ Sessions short of any condition were excluded, so all panels show the same cells
 
 Per panel:
   occupied checks: 52 cells, 177 usable events (median 10 used per cell after the drift cut), 4 sessions, 1 bird; median event duration 0.32 s
-  empty checks: 52 cells, 1941 usable events (median 492 used per cell after the drift cut), 4 sessions, 1 bird; median event duration 0.24 s
+  empty checks: 52 cells, 1942 usable events (median 492 used per cell after the drift cut), 4 sessions, 1 bird; median event duration 0.24 s
   cached retrievals: 52 cells, 399 usable events (median 89 used per cell after the drift cut), 4 sessions, 1 bird; median event duration 1.34 s
   baited retrievals: 52 cells, 13 usable events (median 3 used per cell after the drift cut), 4 sessions, 1 bird; median event duration 1.00 s

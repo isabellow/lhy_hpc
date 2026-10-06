@@ -7,7 +7,7 @@ sys.path.append("../utils/")
 from load_matlab_data import loadmat_sbx
 from scipy.ndimage import gaussian_filter, gaussian_filter1d
 from scipy import stats
-from scipy.signal import medfilt
+from scipy.signal import medfilt, find_peaks
 from matplotlib.path import Path
 
 """
@@ -1386,3 +1386,277 @@ def classify_feeder_ints(feeder_int_start, feeder_int_end,
         feeder_status[i] = np.mean((start_status, end_status))
 
     return feeder_status
+
+''' Saccade analysis '''
+# Exploratory head-saccade detection, after Payne & Aronov 2025 (Nature 643:1037)
+# but with the head axes built from pose keypoints instead of head-mounted
+# reflectors, and saccades taken as peaks in angular head speed while the head
+# is otherwise still (no HMM).
+SACCADE_PARAMS = dict(
+    lin_smooth_sig=5,        # frames; gaussian sigma for linear head speed
+    lin_speed_thresh=0.5,    # head 'not moving' (pose units/s), same scale as
+                             # BEAK_TOUCH_PARAMS['speed_thresh']
+    ang_smooth_sig=1,        # frames; gaussian sigma on angular speed, 0 = none
+    ang_speed_thresh=300,    # deg/s; minimum peak angular head speed
+    min_isi=0.1,             # s; minimum time between saccade peaks
+)
+
+
+def get_head_pose(data_dir, pos_file='posture_pos_smooth.npy'):
+    '''
+    Head position and head-centered axes in every frame.
+
+        x  forward : eye midpoint -> beak (average of the two beak keypoints)
+        y  left    : right eye (11) -> left eye (7), made orthogonal to x
+        z  up      : x cross y
+
+    Returns
+    -------
+    head_pos : (n_frames, 3)        eye midpoint
+    head_axes : (n_frames, 3, 3)    columns are the head x, y, z axes in world
+                                    coordinates, i.e. the head -> world rotation
+    beak_pos : (n_frames, 3)        average of the two beak keypoints
+    '''
+    pts = np.load(f'{data_dir}{pos_file}')            # frames x keypoints x xyz
+    beak_pos = np.mean(pts[:, [0, 1]], axis=1)
+    l_eye, r_eye = pts[:, 7], pts[:, 11]
+    head_pos = (l_eye + r_eye) / 2
+
+    def unit(v):
+        return v / np.linalg.norm(v, axis=1, keepdims=True)
+    x = unit(beak_pos - head_pos)
+    y = l_eye - r_eye
+    y = unit(y - np.sum(y * x, axis=1, keepdims=True) * x)
+    head_axes = np.stack([x, y, np.cross(x, y)], axis=2)
+    return head_pos, head_axes, beak_pos
+
+
+def get_head_speed(head_pos, fps=50, smooth_sig=SACCADE_PARAMS['lin_smooth_sig']):
+    '''Linear head speed (pose units/s), from a gaussian derivative of position.'''
+    vel = gaussian_filter1d(head_pos, smooth_sig, axis=0, order=1) * fps
+    return np.linalg.norm(vel, axis=1)
+
+
+def get_head_angular_speed(head_axes, fps=50,
+                           smooth_sig=SACCADE_PARAMS['ang_smooth_sig']):
+    '''
+    Angular head speed (deg/s): the angle of the rotation between the head
+    axes one frame before and one frame after each frame, divided by 2 frames.
+    The central difference keeps each peak on the frame it happened in.
+    nan in the first and last frame.
+    '''
+    # trace(A^T B) = sum(A * B) -> rotation angle from A to B
+    cos_a = (np.sum(head_axes[:-2] * head_axes[2:], axis=(1, 2)) - 1) / 2
+    ang = np.degrees(np.arccos(np.clip(cos_a, -1, 1))) * fps / 2
+    if smooth_sig > 0:
+        ang = gaussian_filter1d(ang, smooth_sig, mode='nearest')
+    return np.concatenate(([np.nan], ang, [np.nan]))
+
+
+def get_head_tilt(head_axes):
+    '''
+    pitch : elevation of the beak axis above horizontal (deg, + = beak up)
+    roll  : elevation of the left-eye axis above horizontal (deg, + = left eye up)
+    '''
+    pitch = np.degrees(np.arcsin(np.clip(head_axes[:, 2, 0], -1, 1)))
+    roll = np.degrees(np.arcsin(np.clip(head_axes[:, 2, 1], -1, 1)))
+    return pitch, roll
+
+
+def get_perch_idx(frames, count_data):
+    '''
+    Perch the bird is on at each frame: the perchNum of the newPerch/endPerch
+    window containing it (half-open, as everywhere in count_data).
+    0-INDEXED like perchNum (see module INDEXING NOTE); -1 if on no perch.
+    '''
+    starts = np.atleast_1d(np.asarray(count_data['newPerch'])).astype(int)
+    ends = np.atleast_1d(np.asarray(count_data['endPerch'])).astype(int)
+    perch = np.atleast_1d(np.asarray(count_data['perchNum'])).astype(int)
+    order = np.argsort(starts)
+    starts, ends, perch = starts[order], ends[order], perch[order]
+
+    frames = np.asarray(frames).astype(int)
+    k = np.maximum(np.searchsorted(starts, frames, side='right') - 1, 0)
+    on_perch = (frames >= starts[k]) & (frames < ends[k])
+    return np.where(on_perch, perch[k], -1)
+
+
+def get_saccades(data_dir, count_data, fps=50, params=None,
+                 pos_file='posture_pos_smooth.npy', return_kinematics=False):
+    '''
+    Head saccades: peaks in angular head speed above params['ang_speed_thresh']
+    at frames where the (smoothed) linear head speed is below
+    params['lin_speed_thresh'].
+
+    Params
+    ------
+    count_data : dict   as loaded by load_behavior_data, for the perch windows
+    params : dict or None
+        overrides for SACCADE_PARAMS
+    return_kinematics : bool
+        also return the per-frame traces used for detection
+
+    Returns
+    -------
+    saccade_time : int array, shape (n_saccades,)
+        frame of peak angular head speed, sorted.  Same timebase as count_data
+        onsets and the columns of aligned_spikes.npy.
+    saccade_perch_idx : int array, shape (n_saccades,)
+        0-indexed perch the bird is on at the saccade peak (get_perch_idx),
+        -1 if on no perch.
+    kinematics : dict, only if return_kinematics
+        per-frame 'lin_speed', 'ang_speed', 'head_pos' (n_frames, 3) and
+        'beak_pos' (n_frames, 3)
+    '''
+    p = dict(SACCADE_PARAMS)
+    if params is not None:
+        p.update(params)
+
+    head_pos, head_axes, beak_pos = get_head_pose(data_dir, pos_file)
+    lin_speed = get_head_speed(head_pos, fps, p['lin_smooth_sig'])
+    ang_speed = get_head_angular_speed(head_axes, fps, p['ang_smooth_sig'])
+
+    peaks, _ = find_peaks(np.nan_to_num(ang_speed), height=p['ang_speed_thresh'],
+                          distance=max(int(round(p['min_isi'] * fps)), 1))
+    saccade_time = peaks[lin_speed[peaks] < p['lin_speed_thresh']].astype(int)
+    saccade_perch_idx = get_perch_idx(saccade_time, count_data)
+    if return_kinematics:
+        return saccade_time, saccade_perch_idx, dict(
+            lin_speed=lin_speed, ang_speed=ang_speed, head_pos=head_pos, beak_pos=beak_pos)
+    return saccade_time, saccade_perch_idx
+
+
+def get_preceding_saccades(event_onsets, saccade_time, saccade_perch_idx,
+                           count_data, max_lag=np.inf, fps=50,
+                           different_perch=True):
+    '''
+    The saccade preceding each event: the most recent saccade strictly before
+    the event onset, made from a different perch than the one the bird is on
+    at onset (if different_perch).  The event is dropped if any other event
+    happened between that saccade and the onset, i.e. any site interaction
+    (newSite/endSite), feeder interaction (get_feeder_ints) or eating bout
+    (get_eating_bouts) overlapping the span from the saccade to the onset,
+    including one already under way at the saccade.  Perch changes do not
+    count.  A perch of -1 (on no perch) counts as a perch of its own.
+
+    Params
+    ------
+    event_onsets : array, shape (n_events,)     frames
+    saccade_time, saccade_perch_idx : as returned by get_saccades (sorted)
+    count_data : dict   as loaded by load_behavior_data
+    max_lag : float
+        s; a saccade more than this long before the onset does not count.
+        np.inf (default) = no limit.
+    different_perch : bool
+        require the saccade to be made from a different perch than the event's
+
+    Returns
+    -------
+    prev_idx : int array, shape (n_events,)
+        index into saccade_time / saccade_perch_idx, -1 where there is none
+    blocked : bool array, shape (n_events,)
+        True where a saccade was found but another event intervened (these
+        also have prev_idx -1), so callers can report why events were dropped
+    '''
+    event_onsets = np.asarray(event_onsets).astype(int)
+    event_perch = get_perch_idx(event_onsets, count_data)
+
+    # every interval that separates a saccade from the event.  An event's own
+    # site interaction starts AT its onset, so the strict < below excludes it
+    feed_on, feed_off, _ = get_feeder_ints(count_data)
+    eat_on, eat_off = get_eating_bouts(count_data)
+    cat = lambda *a: np.concatenate([np.atleast_1d(np.asarray(x)) for x in a]).astype(int)
+    other_on = cat(count_data['newSite'], feed_on, eat_on)
+    other_off = cat(count_data['endSite'], feed_off, eat_off)
+
+    prev_idx = np.full(event_onsets.shape[0], -1, dtype=int)
+    blocked = np.zeros(event_onsets.shape[0], dtype=bool)
+    for i, (on, perch) in enumerate(zip(event_onsets, event_perch)):
+        ok = (saccade_time < on) & (on - saccade_time <= max_lag * fps)
+        if different_perch:
+            ok &= saccade_perch_idx != perch
+        cand = np.flatnonzero(ok)
+        if cand.size == 0:
+            continue
+        if np.any((other_on < on) & (other_off > saccade_time[cand[-1]])):
+            blocked[i] = True
+        else:
+            prev_idx[i] = cand[-1]
+    return prev_idx, blocked
+
+
+def get_event_times(count_data, seed_struct, event_key, max_check_dur=1.5,
+                    dt=0.02, use_init_counts=True, removal_rule='cached_first',
+                    discovered_bait='cached'):
+    '''
+    Raw onsets, offsets, 0-indexed sites and expectation status
+    (get_expectation_status) for one event type.
+
+    event_key : 'check' | 'retrieval' | 'cache'
+    '''
+    if event_key == 'check':
+        on, off, site = get_checks_raw(count_data, seed_struct,
+                                       max_check_dur=max_check_dur, dt=dt)
+    elif event_key == 'retrieval':
+        on, off, site = get_retrieve_ints(count_data, seed_struct, return_site_idx=True)
+    elif event_key == 'cache':
+        on, off, site = get_cache_ints(count_data, seed_struct, return_site_idx=True)
+    else:
+        raise ValueError("event_key must be 'check', 'retrieval' or 'cache'")
+    on, off, site = (np.asarray(a).astype(int) for a in (on, off, site))
+    status, _ = get_expectation_status(count_data, seed_struct, on, site,
+                                       use_init_counts=use_init_counts,
+                                       removal_rule=removal_rule,
+                                       discovered_bait=discovered_bait)
+    return on, off, site, status
+
+
+def plot_head_kinematics(data_dir, t_window, saccade_time=None, fps=50,
+                         params=None, pos_file='posture_pos_smooth.npy'):
+    '''
+    Quick check of the saccade inputs over t_window = (start, end) in minutes:
+    linear head speed, angular head speed, head position and head tilt, one
+    row each.  Thresholds are dashed; saccade_time (frames, from get_saccades)
+    is marked in red on every row.
+    '''
+    import matplotlib.pyplot as plt
+    p = dict(SACCADE_PARAMS)
+    if params is not None:
+        p.update(params)
+
+    head_pos, head_axes, _ = get_head_pose(data_dir, pos_file)
+    lin_speed = get_head_speed(head_pos, fps, p['lin_smooth_sig'])
+    ang_speed = get_head_angular_speed(head_axes, fps, p['ang_smooth_sig'])
+    pitch, roll = get_head_tilt(head_axes)
+
+    fr = np.arange(int(t_window[0] * 60 * fps),
+                   min(int(t_window[1] * 60 * fps), head_pos.shape[0]))
+    t = fr / fps / 60
+
+    f, ax = plt.subplots(4, 1, figsize=(10, 7), sharex=True)
+    ax[0].plot(t, lin_speed[fr], color='k', lw=0.8)
+    ax[0].axhline(p['lin_speed_thresh'], color='xkcd:gray', ls='--', lw=0.8)
+    ax[1].plot(t, ang_speed[fr], color='k', lw=0.8)
+    ax[1].axhline(p['ang_speed_thresh'], color='xkcd:gray', ls='--', lw=0.8)
+    for i, k in enumerate('xyz'):
+        ax[2].plot(t, head_pos[fr, i], lw=0.8, label=k)
+    ax[3].plot(t, pitch[fr], lw=0.8, label='pitch')
+    ax[3].plot(t, roll[fr], lw=0.8, label='roll')
+
+    if saccade_time is not None:
+        s = saccade_time[(saccade_time >= fr[0]) & (saccade_time <= fr[-1])]
+        ax[1].scatter(s / fps / 60, ang_speed[s], color='r', s=8, zorder=3)
+        for a in ax:
+            a.vlines(s / fps / 60, 0, 1, transform=a.get_xaxis_transform(),
+                     color='r', lw=0.4, alpha=0.4)
+
+    for a, label in zip(ax, ['linear speed\n(units/s)', 'angular speed\n(deg/s)',
+                             'position\n(units)', 'tilt (deg)']):
+        a.set_ylabel(label)
+        a.spines['top'].set_visible(False)
+        a.spines['right'].set_visible(False)
+    ax[2].legend(loc='center left', bbox_to_anchor=(1.01, 0.5), frameon=False)
+    ax[3].legend(loc='center left', bbox_to_anchor=(1.01, 0.5), frameon=False)
+    ax[-1].set_xlabel('time (min)')
+    ax[-1].set_xlim(t[0], t[-1])
+    return f, ax

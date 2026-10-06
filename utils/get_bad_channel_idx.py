@@ -13,7 +13,7 @@ import pandas as pd
 import spikeinterface.extractors as se
 
 # settings
-intan_folder = "C:/Users/Isabel/Documents/data_temp/ROS107_261001/ROS107_261001_121309/"
+intan_folder = "C:/Users/Isabel/Documents/data_temp/ROS107_261004/ROS107_261004_123802/"
 map_path = "Z:/Isabel/ephys/channel_maps/H15_128Chan_IntanMap.xlsx"
 thresh_Mohm = 5.0
 save_binary = False

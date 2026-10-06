@@ -171,7 +171,7 @@ slide_downsample = 4
 
 # probe shank labels, as in the anatomy sheet (shank A = smallest x in
 # channel_positions.npy).  Keys 1-8 pick the shank to trace.
-shank_labels = ['A', 'B']
+shank_labels = ['A']
 # shank_labels = ['A', 'B', 'C', 'D']
 
 # --- series ---------------------------------------------------------------- #

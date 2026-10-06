@@ -12,7 +12,7 @@ Cross-validated: empty checks events were split in half (alternating events in t
 Sessions short of any condition were excluded, so all panels show the same cells in the same rows.
 
 Per panel:
-  occupied checks: 410 cells, 273 usable events (median 4 used per cell after the drift cut), 11 sessions, 5 birds; median event duration 0.34 s
-  empty checks: 410 cells, 6593 usable events (median 404 used per cell after the drift cut), 11 sessions, 5 birds; median event duration 0.20 s
-  cached retrievals: 410 cells, 474 usable events (median 10 used per cell after the drift cut), 11 sessions, 5 birds; median event duration 1.40 s
-  baited retrievals: 410 cells, 50 usable events (median 5 used per cell after the drift cut), 11 sessions, 5 birds; median event duration 0.94 s
+  occupied checks: 419 cells, 269 usable events (median 4 used per cell after the drift cut), 11 sessions, 4 birds; median event duration 0.34 s
+  empty checks: 419 cells, 6457 usable events (median 404 used per cell after the drift cut), 11 sessions, 4 birds; median event duration 0.20 s
+  cached retrievals: 419 cells, 507 usable events (median 10 used per cell after the drift cut), 11 sessions, 4 birds; median event duration 1.42 s
+  baited retrievals: 419 cells, 54 usable events (median 5 used per cell after the drift cut), 11 sessions, 4 birds; median event duration 0.94 s

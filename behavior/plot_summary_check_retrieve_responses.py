@@ -63,7 +63,7 @@ cache_file = f"{root_dir}check_retrieve_summary_cache.npy"
 
 ''' Which data to include '''
 birds_to_plot = None           # None = every bird in data_dict, or a list
-exclude_birds = []             # e.g. ['LIM63']
+exclude_birds = ['LMN86']             # e.g. ['LIM63']
 exclude_sessions = {}          # e.g. {'ROS107': ['260831']}
 plot_levels = ('bird', 'all')
 
@@ -108,8 +108,8 @@ amp_min_spikes = 1
 
 ''' PSTH windows '''
 align_to = ('onset', 'offset')     # one figure per entry
-psth_windows = {'onset': (-5, 0.5),   # s relative to event onset
-                'offset': (-5, 0.5)}  # s relative to event offset
+psth_windows = {'onset': (-1.0, 1.0),   # s relative to event onset
+                'offset': (-1.0, 1.0)}  # s relative to event offset
 sigma_frames = 1                   # Gaussian smoothing (frames), 0 = none
 
 ''' Normalization '''

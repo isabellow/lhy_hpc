@@ -1,13 +1,14 @@
 LH TRQ82, empty checks
 
 Each row is one cell and each column a time bin (20 ms) relative to check onset (-1 to 1 s) and offset (-1 to 1 s); dashed line at 0. Empty checks: site interactions with no seed change lasting <= 1.5 s, at a site the seed ledger scores as empty.
+Isolated checks only: checks whose analysis window (spanning the plotted windows) overlapped another site interaction (check, cache or retrieval) or an eating bout were excluded; perch visits were allowed.
 Activity: each cell's instantaneous firing rate over the whole session was divided by its session SD (+0.01) and a running-average baseline (window 30) was subtracted (pop_normalize), so units are SDs from baseline; this trace was averaged across checks and Gaussian-smoothed (sigma 20 ms). Colour limits -1 to 1 SD (red above, blue below baseline).
 Per cell, checks were excluded where the unit's amplitude in a 1-min window around the check was below 0.7x its session average.
 A cell is drawn only with >= 3 usable checks. Cells: all good units, session firing rate > 0.1 Hz.
 
 Sorting: ordered by the time of each cell's peak (the whole window, onset-aligned), earliest on top.
-Cross-validated: each session's checks were split in half (alternating checks in time); half 0 set the order and the heatmap shows only half 1.
+Not cross-validated: the order was set from the same checks that are plotted, so the sequence is partly built in by the sort.
 
 462 cells, 7 sessions, 1 bird.
-Checks: 11825 checks, 11755 of them empty; 4 too close to the session edge; 5874 in the plotted half, median 642 per cell after the drift cut.
+Checks: 11825 checks, 11755 of them empty; 4 too close to the session edge, 5590 overlapping another event (site interaction: 5552, eating bout: 39); 6161 used, median 777 per cell after the drift cut.
 Median check duration 0.18 s.

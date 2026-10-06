@@ -1,4 +1,4 @@
-HPC all birds, empty checks
+HPC SLV132, empty checks
 
 Each row is one cell and each column a time bin (20 ms) relative to check onset (-1 to 1 s) and offset (-1 to 1 s); dashed line at 0. Empty checks: site interactions with no seed change lasting <= 1.5 s, at a site the seed ledger scores as empty.
 Activity: each cell's instantaneous firing rate over the whole session was divided by its session SD (+0.01) and a running-average baseline (window 30) was subtracted (pop_normalize), so units are SDs from baseline; this trace was averaged across checks and Gaussian-smoothed (sigma 20 ms). Colour limits -0.5 to 0.5 SD (red above, blue below baseline).
@@ -8,6 +8,6 @@ A cell is drawn only with >= 3 usable checks. Cells: all good units, session fir
 Sorting: ordered by the time of each cell's peak (the whole window, onset-aligned), earliest on top.
 Cross-validated: each session's checks were split in half (alternating checks in time); half 0 set the order and the heatmap shows only half 1.
 
-1064 cells, 29 sessions, 5 birds.
-Checks: 69183 checks, 67638 of them empty; 13 too close to the session edge; 33805 in the plotted half, median 997 per cell after the drift cut.
-Median check duration 0.22 s.
+342 cells, 4 sessions, 1 bird.
+Checks: 6376 checks, 6286 of them empty; 6 too close to the session edge; 3140 in the plotted half, median 809 per cell after the drift cut.
+Median check duration 0.20 s.

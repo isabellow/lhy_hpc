@@ -65,7 +65,7 @@ DATASETS = {
         # 'cluster_group' = good units in KS cluster_group.tsv
         cluster_ids='ids_file',
         use_stim_filter=False,
-        exclude_birds=[],                 # e.g. ['LIM63']
+        exclude_birds=['LMN86'],                 # e.g. ['LIM63']
         exclude_sessions={},              # e.g. {'ROS107': ['260831']}
     ),
     'hpc': dict(
@@ -124,7 +124,7 @@ min_events = 3
 # an eating bout.  The window is the span of the PSTH windows in `panels`
 # (onset window start to offset window end when both are shown), widened by
 # overlap_pad on each side.  Perch events never count as overlaps.
-exclude_overlaps = True
+exclude_overlaps = False
 overlap_with = ('site', 'eating')  # any of 'site', 'eating'
 overlap_pad = 0.0                  # s
 
@@ -139,8 +139,8 @@ amp_min_spikes = 1
 # heatmap panels, left to right, sharing one row order: ('onset',),
 # ('offset',) or ('onset', 'offset')
 panels = ('onset', 'offset')
-psth_windows = {'onset': (-0.5, 0.5),   # s relative to check onset
-                'offset': (-0.5, 0.5)}  # s relative to check offset
+psth_windows = {'onset': (-1.0, 1.0),   # s relative to check onset
+                'offset': (-1.0, 1.0)}  # s relative to check offset
 sigma_frames = 1                   # Gaussian smoothing (frames), 0 = none
 
 ''' Normalization '''
@@ -176,7 +176,7 @@ peak_sort = dict(
     # 'hilbert_phase'  instantaneous phase of the Hilbert transform of each
     #                  cell's average response, read at phase_time -- the sort
     #                  in Payne & Aronov 2025 (Nature 643:1037), Fig. 4b
-    method='hilbert_phase',
+    method='peak',
     align=None,               # None = the first panel's alignment
     window=None,              # (t0, t1) s used for the peak search / Hilbert
                               # transform; None = whole PSTH
@@ -194,7 +194,7 @@ peak_sort = dict(
                               # phase just above this goes on top
     phase_reverse=True,       # True: descending phase, so cells that peak
                               # earlier sit on top, as in the peak sort
-    split='all',        # cross-validated: 'alternate' (odd/even checks in
+    split='alternate',        # cross-validated: 'alternate' (odd/even checks in
                               # time) | 'random'; or 'all' = sort on and plot all
                               # checks (NOT cross-validated; visualization only)
     seed=0,                   # 'random' only

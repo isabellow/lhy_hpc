@@ -14,6 +14,7 @@ frame; start is normally negative and the window is half-open [start, end).
 
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
+import matplotlib.pyplot as plt
 
 
 def window_frames(t_start, t_end, dt):
@@ -396,3 +397,105 @@ def raster_marker_size(ax, fig, n_rows, max_area=10000.0):
     ax_h_pts = ax.get_position().height * fig.get_figheight() * 72.0
     area = (ax_h_pts / max(n_rows, 1)) ** 2
     return float(min(area, max_area))
+
+
+''' Colored group labels for rasters '''
+# moved here from plot_baited_cached_activity.py / plot_beak_flap_activity.py
+def _y_label_offset_pts(ax, fig, renderer, gap=0):
+    '''
+    Points from the y spine out to just past the widest y tick label, so the
+    group labels sit as close to the axis as the tick labels allow instead of
+    at a guessed fraction of the axes width.
+    '''
+    widths = [t.get_window_extent(renderer).width for t in ax.get_yticklabels()
+              if t.get_visible() and t.get_text()]
+    label_w_pts = (max(widths) * 72 / fig.dpi) if widths else 0.0
+    tick_pts = (plt.rcParams['ytick.major.size']
+                + plt.rcParams['ytick.major.pad'])
+    return label_w_pts + tick_pts + gap
+
+
+def draw_group_labels(fig, ax, renderer, groups_sorted, block_edges, colors,
+                      names, fontsize=12, gap=3.0, min_fontsize=7):
+    '''
+    One coloured label per raster block, always drawn, however thin the block.
+
+    The bottom block's label starts at the bottom of the axes and the top
+    block's ends at the top, so the two can never collide; anything in between
+    is centred on its own block and then nudged, if it has to be, into whatever
+    room the pinned labels leave.  If three names cannot fit stacked at the
+    requested size they are all shrunk together, down to min_fontsize.
+
+    Rotated text anchors on the un-rotated alignment, so with
+    rotation_mode='anchor' and rotation=90: ha sets where the text sits along y
+    ('left' = starts at the anchor and runs up), and va='bottom' keeps the
+    glyphs entirely to the left of the anchor.
+    '''
+    groups_sorted = np.asarray(groups_sorted)
+    n_events = groups_sorted.shape[0]
+    if n_events == 0:
+        return
+
+    edges = np.unique(np.concatenate(
+        ([0], np.asarray(list(block_edges), dtype=int), [n_events])))
+    blocks = [(a, b) for a, b in zip(edges[:-1], edges[1:]) if b > a]
+    n_blocks = len(blocks)
+
+    pad = _y_label_offset_pts(ax, fig, renderer, gap=gap)
+    y_bottom, y_top = ax.get_ylim()
+
+    anns = []
+    for i, (a, b) in enumerate(blocks):
+        g_id = int(groups_sorted[a])
+        if n_blocks > 1 and i == 0:
+            y, ha = y_bottom, 'left'            # runs up from the axes bottom
+        elif n_blocks > 1 and i == n_blocks - 1:
+            y, ha = y_top, 'right'              # ends at the axes top
+        else:
+            y, ha = (a + b - 1) / 2, 'center'   # centred on the block
+        anns.append(ax.annotate(
+            names[g_id], xy=(0, y), xycoords=ax.get_yaxis_transform(),
+            xytext=(-pad, 0), textcoords='offset points',
+            rotation=90, rotation_mode='anchor', ha=ha, va='bottom',
+            color=colors[g_id], fontsize=fontsize, annotation_clip=False))
+
+    if n_blocks == 1:
+        return
+
+    # rotated text: the window extent's height is the length of the name.
+    # convert to raster rows so the stacking can be done in data coordinates
+    inv = ax.transData.inverted()
+    def to_rows(px):
+        (_, lo), (_, hi) = inv.transform([(0, 0), (0, px)])
+        return abs(hi - lo)
+
+    def heights_rows():
+        return [to_rows(t.get_window_extent(renderer).height) for t in anns]
+
+    span = abs(y_top - y_bottom)
+    gap_rows = to_rows(0.4 * fontsize * fig.dpi / 72)
+    heights = heights_rows()
+
+    # names stacked end to end are taller than the raster: shrink them all by
+    # the same factor rather than letting the labels sit on top of each other
+    needed = sum(heights) + gap_rows * (n_blocks - 1)
+    if needed > span:
+        shrunk = max(min_fontsize, fontsize * span / needed)
+        if shrunk < fontsize:
+            for t in anns:
+                t.set_fontsize(shrunk)
+            gap_rows = to_rows(0.4 * shrunk * fig.dpi / 72)
+            heights = heights_rows()
+
+    # keep the middle labels clear of the two pinned ones (a middle block can
+    # be a single row tall, so its own centre is not a safe position)
+    low = y_bottom + heights[0] + gap_rows           # top of the bottom label
+    high = y_top - heights[-1] - gap_rows            # bottom of the top label
+    for i in range(1, n_blocks - 1):
+        half = heights[i] / 2
+        if low + half > high - half:                 # no room: split what is left
+            centre = (low + high) / 2
+        else:
+            centre = min(max(anns[i].xy[1], low + half), high - half)
+        anns[i].xy = (0, centre)
+        low = centre + half + gap_rows

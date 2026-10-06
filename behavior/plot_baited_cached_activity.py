@@ -6,7 +6,6 @@ import zlib
 sys.path.append("..//utils/")
 sys.path.append("..//stim/")
 sys.path.append("..//neural/")
-from format_waveform_data import cluster_ids_for_session
 from cell_filters import filter_cells, apply_cell_filter
 from event_psth import (window_frames, build_raster, raster_scatter,
                         sort_events_by_duration, sort_events_by_time_group, 
@@ -56,7 +55,7 @@ data_file = f"{root_dir}good_session_data.npy"
 session_info_file = f"{root_dir}good_sessions.xlsx"
 
 ''' Data params '''
-bird = 'TRQ82'  # update as needed
+bird = 'ROS107'  # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
 session_list = data_dict[bird]['all_sessions']
 # session_list = ['260810', '260819', '260821', '260825']
@@ -94,7 +93,7 @@ min_events_per_group = 2
 max_events_per_group = 200
 
 # sort by duration or chronological?
-sort_by_duration = False
+sort_by_duration = True
 
 # skip plotting a session if any group has fewer than min_events_per_group.
 skip_too_few_events = False

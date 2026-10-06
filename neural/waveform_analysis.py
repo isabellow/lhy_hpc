@@ -696,37 +696,62 @@ def _robust_z(X):
 
 def cluster_negative_units(feats, rate_key='stable_rate', spread_key='decay_um',
                            width_key='width_ms', n_clusters=2, method='gmm',
-                           max_k=4, min_frac_stable=0.0, seed=0):
+                           max_k=4, min_frac_stable=0.0, seed=0, features=None):
     '''
-    Cluster trough-dominant units in (log10 rate, width, log10 spread).
+    Cluster trough-dominant units in a chosen feature space; by default
+    (log10 rate, width, log10 spread).
 
-    Only units with polarity == -1 and finite values for all three features
-    are clustered (and, optionally, frac_stable >= min_frac_stable; units
-    flagged 'peak_shank_mismatch' by build_data_dict are left out). Features
+    Only units with polarity == -1 and finite values for every feature are
+    clustered (and, optionally, frac_stable >= min_frac_stable; units
+    flagged 'peak_shank_mismatch' by build_data_dict are left out). A
+    log-scaled feature that is <= 0 for a unit (e.g. weighted_dist_um or
+    extent_um of 0 for a unit seen on one channel) is non-finite after the log,
+    so that unit is left out; counts are returned in 'n_nonpos'. Features
     are robust-z-scored (median / IQR), so a few extreme units do not set the
-    scale. Clusters are numbered by median width, 0 = narrowest, rather than
-    by size: in LHy there is no reason to expect the larger cluster to be any
+    scale. Clusters are numbered by the median of width_key if it is one of
+    the features (0 = narrowest), else by the first feature, rather than by
+    size: in LHy there is no reason to expect the larger cluster to be any
     particular cell type.
 
     For method='gmm', BIC is reported for k = 1..max_k. If k = 1 wins, the
     data do not support splitting in this space, whatever k-means says.
+
+    Params
+    ------
+    features : list of (key, log10) pairs, optional
+        Any per-unit keys of feats, e.g.
+        [('stable_rate', True), ('width_ms', False), ('asymmetry', False)].
+        Overrides rate_key / spread_key / width_key when given.
 
     Returns
     -------
     dict with
       labels : (n,) int, cluster for clustered units, -1 otherwise
       clustered : (n,) bool
-      X : (n, 3) the raw features (log10 rate, width, log10 spread)
+      X : (n, n_features) the features, log10 applied where requested
       prob : (n, n_clusters) posterior (gmm only; nan elsewhere)
       bic : {k: BIC} (gmm only)
-      names : feature names
+      names : feature names; keys, log : the keys and log flags
+      n_nonpos : {key: n trough-dominant units with a value <= 0} (log features)
     '''
+    if features is None:
+        features = [(rate_key, True), (width_key, False), (spread_key, True)]
+    keys = [k for k, _ in features]
+    logs = [bool(lg) for _, lg in features]
     n = len(feats['polarity'])
-    with np.errstate(divide='ignore', invalid='ignore'):
-        X = np.column_stack([np.log10(feats[rate_key]),
-                             np.asarray(feats[width_key], float),
-                             np.log10(feats[spread_key])])
-    ok = (np.asarray(feats['polarity']) == -1) & np.all(np.isfinite(X), axis=1)
+    neg = np.asarray(feats['polarity']) == -1
+
+    cols, n_nonpos = [], {}
+    for key, lg in features:
+        v = np.asarray(feats[key], dtype=float)
+        if lg:
+            n_nonpos[key] = int(np.sum(neg & np.isfinite(v) & (v <= 0)))
+            with np.errstate(divide='ignore', invalid='ignore'):
+                v = np.log10(v)
+        cols.append(v)
+    X = np.column_stack(cols)
+
+    ok = neg & np.all(np.isfinite(X), axis=1)
     if 'peak_shank_mismatch' in feats:      # features and keep mask on different shanks
         ok &= ~np.asarray(feats['peak_shank_mismatch']).astype(bool)
     if min_frac_stable > 0:
@@ -749,14 +774,16 @@ def cluster_negative_units(feats, rate_key='stable_rate', spread_key='decay_um',
             model = KMeans(n_clusters, n_init=100, random_state=seed).fit(Z)
             lab = model.labels_
             p = None
-        order = np.argsort([np.median(X[ok][lab == k, 1]) for k in range(n_clusters)])
+        sort_col = keys.index(width_key) if width_key in keys else 0
+        order = np.argsort([np.median(X[ok][lab == k, sort_col]) for k in range(n_clusters)])
         remap = np.empty(n_clusters, int)
         remap[order] = np.arange(n_clusters)
         labels[ok] = remap[lab]
         if p is not None:
             prob[ok] = p[:, order]
+    names = [f'log10 {k}' if lg else k for k, lg in features]
     return dict(labels=labels, clustered=ok, X=X, prob=prob, bic=bic,
-                names=[f'log10 {rate_key}', width_key, f'log10 {spread_key}'])
+                names=names, keys=keys, log=logs, n_nonpos=n_nonpos)
 
 
 
@@ -984,3 +1011,29 @@ def trial_trial_correlations(filt_data, templates,
         all_correlations[i] = corr_composite
 
     return all_correlations, t_windows
+
+
+def get_bird_wf_features(data_dict, bird, feature_key='wf_features_v2'):
+    '''
+    All v2 waveform features for one bird, concatenated across its sessions.
+
+    Each value is a (n_cells,) array. Rows follow session order, and within a
+    session the same kept cells as aligned_spikes.npy and cluster_ids.
+    'session' and 'cluster_id' say which cell each row is.
+    '''
+    pooled = {}
+    sessions = []
+    for session_id in data_dict[bird]['all_sessions']:
+        session_feats = data_dict[bird][session_id].get(feature_key)
+        if session_feats is None:          # no ephys, or v2 not computed yet
+            continue
+        n_cells = len(session_feats['polarity'])
+        for key, values in session_feats.items():
+            # per-cell arrays only (skips stability_chunks and other non-array entries)
+            if isinstance(values, np.ndarray) and values.shape[:1] == (n_cells,):
+                pooled.setdefault(key, []).append(values)
+        sessions.append(np.full(n_cells, session_id, dtype=object))
+
+    bird_feats = {key: np.concatenate(arrays) for key, arrays in pooled.items()}
+    bird_feats['session'] = np.concatenate(sessions) if sessions else np.array([])
+    return bird_feats
