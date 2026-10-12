@@ -158,7 +158,7 @@ for bird in bird_ids:
     cell_pos = pos_dict[bird]['cell_pos']
     cell_dv = cell_pos[:, -1].copy()
     shank_idx = pos_dict[bird]['shank_idx']
-    wf_width = pos_dict[bird]['waveform_props'][1]
+    wf_width = pos_dict[bird]['waveform_props'][1] # todo update
     cell_fr = pos_dict[bird]['waveform_props'][2]
     n_cells = wf_width.shape[0]
 

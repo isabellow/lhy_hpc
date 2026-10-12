@@ -233,7 +233,7 @@ from scipy.interpolate import CubicSpline
 FS = 30000
 SPIKE_IDX = 45
 
-SHAPE_KEYS = ['amp', 'pk_trough_ratio', 'polarity', 'width_ms', 'half_width_ms',
+SHAPE_KEYS = ['amp', 'pk_trough_ratio', 'polarity', 'width_ms', 'width_side', 'half_width_ms',
               'asymmetry', 'pre_ratio', 'post_ratio', 'main_offset_ms',
               'deriv_ratio', 'asymmetry_raw', 'trough_peak_lag_ms', 'deriv_ratio_raw']
 SPATIAL_KEYS = ['n_ch_above', 'extent_um', 'weighted_dist_um', 'decay_um',
@@ -358,8 +358,12 @@ def waveform_shape(wf, fs=FS, spike_idx=SPIKE_IDX, upsample=10,
       pk_trough_ratio : largest positive / |largest negative| near the spike
       polarity : -1 trough-dominant, +1 peak-dominant, 0 ambiguous
                  (ambiguous units are measured as if trough-dominant)
-      width_ms : dominant extremum -> largest opposite lobe within post_win_ms;
-                 nan if there is no such lobe
+      width_ms : dominant extremum -> largest opposite lobe within post_win_ms.
+                 If there is none, the largest opposite lobe within pre_win_ms
+                 *before* the extremum is used instead (its distance to the
+                 extremum); nan if there is neither
+      width_side : +1 if width_ms used the lobe after the extremum, -1 if the
+                 lobe before it, nan if no width
       half_width_ms : FWHM of the dominant extremum
       asymmetry : (b - a) / (b + a), a / b = lobe before / after the extremum
       pre_ratio, post_ratio : a / amp, b / amp
@@ -420,6 +424,17 @@ def waveform_shape(wf, fs=FS, spike_idx=SPIKE_IDX, upsample=10,
     pre = z[max(i - _ms_to_samp(pre_win_ms, f), 0):i]
     a = max(pre.max(), 0.0) if pre.size else 0.0
 
+    # no lobe after the extremum: fall back to the lobe before it, so a
+    # biphasic spike gets its peak-to-trough interval whichever phase is
+    # larger (otherwise near-symmetric cells get nan)
+    width_side = 1.0 if np.isfinite(width) else np.nan
+    if not np.isfinite(width) and pre.size:
+        pk, _ = find_peaks(pre, prominence=min_prom * amp)
+        if pk.size:
+            j = pk[np.argmax(pre[pk])]
+            width = (pre.size - j) / f * 1e3
+            width_side = -1.0
+
     # steepest rise / steepest fall around the dominant extremum
     d_lo = max(i - _ms_to_samp(pre_win_ms, f), 0)
     d_hi = min(i + _ms_to_samp(post_win_ms, f) + 1, z.size)
@@ -446,6 +461,7 @@ def waveform_shape(wf, fs=FS, spike_idx=SPIKE_IDX, upsample=10,
                asymmetry=(b - a) / (b + a) if (a + b) > 0 else np.nan,
                pre_ratio=a / amp, post_ratio=b / amp,
                main_offset_ms=(i - s0) / f * 1e3,
+               width_side=width_side,
                deriv_ratio=deriv_ratio,
                asymmetry_raw=(b_raw - a_raw) / (b_raw + a_raw) if (a_raw + b_raw) > 0 else np.nan,
                trough_peak_lag_ms=(j_pk - j_tr) / f * 1e3,
@@ -672,6 +688,7 @@ def unit_stability(spike_frames, amps, n_frames, dt, amp_frac=0.7,
     Returns
     -------
     dict with chunk_s (length used, s), mean_rate, stable_rate (Hz),
+    max_rate (Hz: highest firing rate in any one stable chunk),
     frac_stable (of time), presence_ratio, rate_amp_rho (Spearman, across
     measured chunks), amp_drop (1 - min / reference chunk amplitude), and
     per-chunk arrays under 'chunks' (centers and half-width in frames, rate,
@@ -688,7 +705,7 @@ def unit_stability(spike_frames, amps, n_frames, dt, amp_frac=0.7,
     n_chunks = med.size
 
     res = dict(chunk_s=ch['chunk_s'], mean_rate=counts.sum() / dur.sum(),
-               stable_rate=np.nan, frac_stable=0.0,
+               stable_rate=np.nan, max_rate=np.nan, frac_stable=0.0,
                presence_ratio=np.mean(counts > 0), rate_amp_rho=np.nan,
                amp_drop=np.nan)
     stable = np.zeros(n_chunks, bool)
@@ -706,6 +723,7 @@ def unit_stability(spike_frames, amps, n_frames, dt, amp_frac=0.7,
             res['rate_amp_rho'] = stats.spearmanr(rate[measured], med[measured])[0]
     if stable.any():
         res['stable_rate'] = counts[stable].sum() / dur[stable].sum()
+        res['max_rate'] = rate[stable].max()
         res['frac_stable'] = dur[stable].sum() / dur.sum()
     res['chunks'] = dict(centers=ch['centers'], half=ch['half'], rate=rate,
                          med_amp=med, stable=stable)
@@ -718,8 +736,8 @@ def stability_for_units(amp_data, n_frames, dt, **kw):
     per cluster ID passed to it, e.g. goodIDs, in that order).
     Scalar outputs are returned as (n_units,) arrays; per-chunk data as a list.
     '''
-    scal = ['chunk_s', 'mean_rate', 'stable_rate', 'frac_stable', 'presence_ratio',
-            'rate_amp_rho', 'amp_drop']
+    scal = ['chunk_s', 'mean_rate', 'stable_rate', 'max_rate', 'frac_stable',
+            'presence_ratio', 'rate_amp_rho', 'amp_drop']
     out = {k: np.full(len(amp_data), np.nan) for k in scal}
     out['chunks'] = []
     for u, (frames, amps) in enumerate(amp_data):

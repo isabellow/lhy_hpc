@@ -175,6 +175,7 @@ WF_CLUSTER_SETTINGS = dict(
     source='wf_features_v2',
     features=[
         ('stable_rate', True),       # firing rate while well recorded
+        ('max_rate', True),          # max firing rate across stable periods (default chunk = 60 sec)
         ('cv2', False),              # irregularity of firing
         ('pk_trough_ratio', True),   # polarity, as a continuous feature
         ('width_ms', False),         # dominant phase to opposite lobe
@@ -182,12 +183,12 @@ WF_CLUSTER_SETTINGS = dict(
         ('lobe_log_ratio', False),   # asymmetry without the pile-up at +-1
     ],
     polarities=(-1, 0, 1),
-    n_clusters=4,                 # read the BIC curve first, then fix it
+    n_clusters=6,                 # read the BIC curve first, then fix it
     max_k=8,
-    min_posterior=0.9,
+    min_posterior=0.7,
     outlier_pct=1.0,
     min_frac_stable=0.05,
-    spread_cutoff=('weighted_dist_um', 75),
+    spread_cutoff=('weighted_dist_um', 100),
 )
 
 
@@ -426,8 +427,8 @@ def collect_waveform_data(data_dict, bird_ids, root_dir, overwrite=False,
             else:
                 print(f'  {bird}_{session_id}: no frame_times.npy, stability left as nan')
                 stab = {k: np.full(n_cells, np.nan) for k in
-                        ['chunk_s', 'mean_rate', 'stable_rate', 'frac_stable', 'presence_ratio',
-                         'rate_amp_rho', 'amp_drop']}
+                        ['chunk_s', 'mean_rate', 'stable_rate', 'max_rate', 'frac_stable',
+                         'presence_ratio', 'rate_amp_rho', 'amp_drop']}
                 stab['chunks'] = [None] * n_cells
             chunks = stab.pop('chunks')
 
@@ -1113,11 +1114,12 @@ def build_or_update_session_data(new_bird_ids=None, run_pop_vectors=True,
     np.save(DATA_FILE, data_dict)
 
     print("\n=== waveform properties ===")
-    data_dict = collect_waveform_data(data_dict, bird_ids, ROOT_DIR, overwrite=overwrite, reuse_spike_train=True)
+    data_dict = collect_waveform_data(data_dict, bird_ids, ROOT_DIR, overwrite=False,
+                                      reuse_spike_train=True)
     np.save(DATA_FILE, data_dict)
 
     print("\n=== cell-type clustering ===")
-    data_dict = cluster_cells(data_dict, overwrite=overwrite_clusters)
+    data_dict = cluster_cells(data_dict, overwrite=True)
     np.save(DATA_FILE, data_dict)
 
     print("\n=== anatomy / channel positions ===")

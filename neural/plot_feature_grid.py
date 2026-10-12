@@ -28,6 +28,7 @@ COLOR_BY = 'wf_cluster'          # or 'polarity'
 # (key, axis label, log scale); any per-cell key of the features dict
 FEATURES = [
     ('stable_rate', 'rate (Hz)', True),
+    ('max_rate', 'max rate (Hz)', True),          
     # ('inv_median_isi_hz', '1 / median ISI (Hz)', True),
     ('cv2', 'CV2', False),
     ('burst_index', 'burst index', False),
@@ -43,8 +44,8 @@ FEATURES = [
 SHOW_UNCLASSIFIED = True         # draw cells with code -1 in light gray
 PANEL_IN = 1.45                  # inches per panel
 
-CLUSTER_COLORS = ['xkcd:saffron', 'xkcd:cobalt blue', 'xkcd:grass green', 'xkcd:scarlet', 'xkcd:purple',
-                  'xkcd:teal', 'xkcd:magenta', 'xkcd:mustard', 'xkcd:sky blue']
+CLUSTER_COLORS = ['xkcd:saffron', 'xkcd:purple', 'xkcd:cobalt blue', 'xkcd:grass green', 'xkcd:teal',
+                  'xkcd:scarlet', 'xkcd:magenta', 'xkcd:mustard', 'xkcd:sky blue']
 CODE_STYLE = {   # code: (legend label, color), drawn under the clusters
     -1: ('unclassified', 'xkcd:light gray'),
     -2: ('positive', 'xkcd:saffron'),

@@ -13,7 +13,7 @@ session_info_file = f"{root_dir}good_sessions.xlsx"
 
 ''' Data params '''
 bird = 'ROS107'
-session_ids = ['261004']   # list of session IDs, or None for every session of this bird
+session_ids = ['260925', '260928', '261001', '261004']   # list of session IDs, or None for every session of this bird
 data_dict = np.load(data_file, allow_pickle=True).item()
 # example_cells = np.asarray([2]) # example cell IDs (KS IDs differ across sessions,
 #                                 # so only use this with a single session)

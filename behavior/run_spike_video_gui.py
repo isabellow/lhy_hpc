@@ -12,8 +12,10 @@ Keys
     space           play / pause
     left / right    step one frame back / forward   (+shift = 10 frames)
     up / down       shrink / grow the heatmap time window
-    c / r / k / e / f   jump to next cache / retrieve / check / eating bout /
-                        feeder visit   (+shift = previous one)
+    c               jump to next cache                (+shift = previous one,
+    r / b           ... cached / baited retrieval      for all of these)
+    k / x           ... occupied / empty check
+    e / f           ... eating bout / feeder visit
     + / -           zoom the video in / out
     h               grab the video (move the mouse to drag it); h again to drop
     z               back to full frame
@@ -33,8 +35,8 @@ from spike_video_gui import launch, sort_cells_by_peak_time  # noqa: F401
 #  PARAMETERS                                                                  #
 # --------------------------------------------------------------------------- #
 
-bird = 'ROS107'
-session_id = '260923'
+bird = 'TRQ82'
+session_id = '260813'
 root_dir = 'Z:/Isabel/data/lhy_implants/'
 session_dir = f'{root_dir}{bird}/{bird}_{session_id}/'
 
@@ -71,8 +73,8 @@ spike_t_window = 250
 smoothing = None
 
 # phy cluster IDs to plot; None = all rows of aligned_spikes.npy
-cell_ids = None
-# cell_ids = [11, 15, 20, 22, 23, 27, 34, 41, 50, 52, 68, 87, 90, 97, 99, 113, 115, 55, 85, 95, 86, 72, 78, 77, 51]
+# cell_ids = None
+cell_ids = [53, 82, 150, 164, 193, 311, 44, 210]
 
 # indices that sort the rows of aligned_spikes.npy into the desired order;
 # None = keep the order they are stored in
@@ -121,6 +123,22 @@ use_repo_moving_avg = True
 #         truncated against neighbouring interactions)
 refined_events = False
 
+# check / retrieval labels, from format_behavior_data.get_expectation_status.
+# Defaults match plot_baited_cached_activity.py.
+#   check (occupied / empty)      : was there a seed in the site?
+#   retrieve (baited)             : a bait at a site the bird had never opened
+#   retrieve (cached)             : its own cache, or a bait it already found
+max_check_dur = 1.5           # s; longer site interactions are not checks
+                              # (raw events only -- refined hard-codes 1.5)
+# a bait the bird has already found but left: 'cached' pools it with the
+# bird's own caches, 'drop' draws it as 'unscored' instead
+discovered_bait = 'cached'
+# which pool a retrieval draws from when a site holds both kinds
+removal_rule = 'cached_first'
+# count the seeds we placed at the start of the session (initSeedCounts);
+# False = within-session caching only, so nothing can come back baited
+use_init_counts = True
+
 playback_speed = 1.0
 video_downsample = 1          # 2 halves a 1896x640 frame if playback stutters
 
@@ -128,6 +146,9 @@ video_downsample = 1          # 2 halves a 1896x640 frame if playback stutters
 #   import format_behavior_data as fbd
 #   seed_struct, count_data = fbd.load_behavior_data(data_dir)
 #   events = {'cache': fbd.get_cache_ints(count_data, seed_struct), ...}
+# keys must be EVENT_SPEC names: feeder, eat, cache, retrieve_cached,
+# retrieve_baited, check_empty, check_occupied, retrieve_unscored,
+# check_unscored -- anything else is ignored with a warning
 events = None
 
 # phy cluster ID per row of aligned_spikes.npy; None = read the tsv
@@ -155,6 +176,10 @@ if __name__ == '__main__':
            baseline_units=baseline_units,
            use_repo_moving_avg=use_repo_moving_avg,
            refined_events=refined_events,
+           max_check_dur=max_check_dur,
+           use_init_counts=use_init_counts,
+           removal_rule=removal_rule,
+           discovered_bait=discovered_bait,
            display_mode=display_mode,
            playback_speed=playback_speed,
            video_downsample=video_downsample,

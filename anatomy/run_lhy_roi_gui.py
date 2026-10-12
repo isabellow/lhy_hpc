@@ -90,11 +90,13 @@ from lhy_roi_gui import launch
 # --------------------------------------------------------------------------- #
 hist_root = 'Z:/Isabel/histology/lhy_implants/'
 data_root = 'Z:/Isabel/data/lhy_implants/'
-bird = 'LMN86'
+bird = 'ROS107'
+# bird = 'LMN86'
 # bird = 'LIM64' 
 # bird = 'TRQ82' 
 # bird = 'LMN88'
-hist_folder = '20260915_090644_980'
+hist_folder = '20261009_091730_361'
+# hist_folder = '20260915_090644_980'
 # hist_folder = 'bad_model'
 # hist_folder = '20260804_091518_518'
 

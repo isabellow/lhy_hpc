@@ -137,7 +137,7 @@ for key in PLOT_FEATURES:
         if key in SIGNED:                       # symmetric, so 0 is white
             lo, hi = -max(abs(lo), abs(hi)), max(abs(lo), abs(hi))
         norm = (LogNorm if log else Normalize)(lo, hi)
-        cmap = 'bwr' if key in SIGNED else 'viridis'
+        cmap = 'bwr' if key in SIGNED else 'jet'
 
     gs_kw = dict(hspace=0.1, wspace=0.3)
     f, ax = plt.subplots(1, n_cols, figsize=(0.85*n_cols, 5),

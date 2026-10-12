@@ -57,8 +57,8 @@ session_info_file = f"{root_dir}good_sessions.xlsx"
 ''' Data params '''
 bird = 'ROS107'  # update as needed
 data_dict = np.load(data_file, allow_pickle=True).item()
-session_list = data_dict[bird]['all_sessions']
-# session_list = ['260810', '260819', '260821', '260825']
+# session_list = data_dict[bird]['all_sessions']
+session_list = ['260928', '261001', '261004']
 fps = 50  # Hz
 dt = 1 / fps
 
@@ -87,13 +87,13 @@ removal_rule = 'cached_first'
 use_init_counts = True
 
 # a group needs at least this many usable events to get a tuning curve
-min_events_per_group = 2
+min_events_per_group = 3
 
 # max events plotted in the raster
 max_events_per_group = 200
 
 # sort by duration or chronological?
-sort_by_duration = True
+sort_by_duration = False
 
 # skip plotting a session if any group has fewer than min_events_per_group.
 skip_too_few_events = False
@@ -124,8 +124,8 @@ for session_id in session_list:
 
 ''' Plotting params '''
 # tuning-curve windows (seconds) relative to event onset / offset
-fr_on_start, fr_on_end, timepoints_on = window_frames(-0.3, 0.3, dt)
-fr_off_start, fr_off_end, timepoints_off = window_frames(-0.3, 0.3, dt)
+fr_on_start, fr_on_end, timepoints_on = window_frames(-0.5, 0.5, dt)
+fr_off_start, fr_off_end, timepoints_off = window_frames(-0.5, 0.5, dt)
 
 # raster window centered on event onset
 event_window = 1                                    # seconds, total
@@ -151,7 +151,7 @@ psth_lw = 1.5
 event_lw = 0.8
 divider_lw = 0.8
 time_int = 1        # x-tick spacing (s) on the rasters
-time_int_tc = 0.1        # x-tick spacing (s) on the tuning curves
+time_int_tc = 0.2        # x-tick spacing (s) on the tuning curves
 title_size = 14
 axis_label = 12
 legend_size = 8

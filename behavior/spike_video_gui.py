@@ -9,8 +9,13 @@ activity, for the chickadee caching task (Chettih et al. 2024 paradigm).
 Layout
 ------
     top     : one camera view (pan / zoom)
-    middle  : one-row ethogram -- feeder / eating / cache / retrieve / check
-              spans, color-coded, with a colored-text legend above it
+    middle  : one-row ethogram -- feeder / eating / cache / retrieval / check
+              spans, color-coded, with a colored-text legend above it.
+              Checks are split into occupied and empty sites, and retrievals
+              into baited seeds the bird has never seen vs seeds it should
+              expect (its own caches, plus baits it has already found), using
+              format_behavior_data.get_expectation_status -- the same
+              classification as plot_baited_cached_activity.py
     bottom  : spike raster (default) or firing-rate heatmap, cells on y, time
               on x, centered on the current frame (thin red line).  In the
               raster each spike is a tick the height of its cell's row,
@@ -106,12 +111,35 @@ def add_repo_to_path(repo_root=None):
 # name -> (hotkey, color, legend label).  Order sets the legend order and the
 # ethogram draw order: later entries are drawn on top, so the rare events go
 # last in case two annotations ever do overlap.
+#
+# Check / retrieval colors follow plot_baited_cached_activity.py: greens for
+# checks, purple for cached retrievals, dark grey for baited ones.
+#
+# The two 'unscored' entries catch anything get_expectation_status cannot put
+# in a group -- a site outside the arena, a retrieval the seed ledger scored
+# as empty (annotation / initSeedCounts mismatch), or, with
+# discovered_bait='drop', baits the bird had already found.  They are still
+# drawn so no annotated event silently disappears from the video, but have no
+# hotkey and only appear in the legend when there are any (optional=True).
 EVENT_SPEC = OrderedDict([
-    ('feeder',   dict(key='f', color=to_hex('xkcd:scarlet'),     label='feeder')),
-    ('eat',      dict(key='e', color='#006666',                  label='eating')),
-    ('cache',    dict(key='c', color=to_hex('xkcd:orange'),      label='cache')),
-    ('retrieve', dict(key='r', color=to_hex('xkcd:purple'),      label='retrieve')),
-    ('check',    dict(key='k', color=to_hex('xkcd:deep green'),  label='check')),
+    ('feeder',            dict(key='f', color=to_hex('xkcd:scarlet'),
+                               label='feeder')),
+    ('eat',               dict(key='e', color='#006666',
+                               label='eating')),
+    ('cache',             dict(key='c', color=to_hex('xkcd:orange'),
+                               label='cache')),
+    ('retrieve_cached',   dict(key='r', color=to_hex('xkcd:purple'),
+                               label='retrieve (cached)')),
+    ('retrieve_baited',   dict(key='b', color=to_hex('xkcd:dark grey'),
+                               label='retrieve (baited)')),
+    ('check_empty',       dict(key='x', color=to_hex('xkcd:apple green'),
+                               label='check (empty)')),
+    ('check_occupied',    dict(key='k', color=to_hex('xkcd:deep green'),
+                               label='check (occupied)')),
+    ('retrieve_unscored', dict(key=None, color=to_hex('xkcd:grey'),
+                               label='retrieve (unscored)', optional=True)),
+    ('check_unscored',    dict(key=None, color=to_hex('xkcd:grey'),
+                               label='check (unscored)', optional=True)),
 ])
 
 # left-axis width, shared by the ethogram and the heatmap so they line up
@@ -145,11 +173,34 @@ def _clean_event(onsets, offsets, n_frames, min_dur=1):
     return on[order], off[order]
 
 
+def _empty_events():
+    return OrderedDict((n, (np.zeros(0, np.int64), np.zeros(0, np.int64)))
+                       for n in EVENT_SPEC)
+
+
 def load_events(data_dir, n_frames, repo_root=None, refined=False,
-                use_beak=True):
+                use_beak=True, dt=0.02, max_check_dur=1.5,
+                use_init_counts=True, removal_rule='cached_first',
+                discovered_bait='cached'):
     """
-    Compute cache / retrieve / check / eat / feeder events straight from
+    Compute cache / retrieval / check / eat / feeder events straight from
     annotatedSeeds.mat with behavior/format_behavior_data.py.
+
+    Checks and retrievals are split by what the bird should expect to find in
+    the site, with format_behavior_data.get_expectation_status -- the same
+    call, on the same events and with the same settings, as
+    plot_baited_cached_activity.py:
+
+        check_occupied     status BAITED or CACHED (a seed was in the site)
+        check_empty        status EMPTY
+        retrieve_baited    status BAITED: a seed we placed, at a site the bird
+                           had never interacted with before
+        retrieve_cached    status CACHED: a seed the bird cached, or a bait it
+                           had already found but left in place
+        *_unscored         anything else (SITE_UNKNOWN; an EMPTY retrieval)
+
+    Status is always scored from the RAW event onsets, so the classification
+    does not change with `refined`; only the drawn bounds do.
 
     refined : bool
         False (default) -- raw event bounds (get_cache_ints, get_retrieve_ints,
@@ -157,8 +208,16 @@ def load_events(data_dir, n_frames, repo_root=None, refined=False,
         event boundaries, which is what you want when looking at video.
         True -- the SC/EM 2024 analysis windows (get_*_refined): padded by
         250 ms and truncated against neighbouring interactions.
+    dt : float
+        frame period in s, for the check duration cut and refined windows
+    max_check_dur : float
+        site interactions longer than this (s) are not counted as checks.
+        Raw mode only; get_checks_refined hard-codes 1.5 s.
+    use_init_counts, removal_rule, discovered_bait :
+        passed to _seed_provenance_timeline / get_expectation_status; see
+        format_behavior_data.  Defaults match plot_baited_cached_activity.py.
 
-    Returns {name: (onsets, offsets)} in frames.
+    Returns {name: (onsets, offsets)} in frames, one entry per EVENT_SPEC key.
     """
     add_repo_to_path(repo_root)
     try:
@@ -167,28 +226,106 @@ def load_events(data_dir, n_frames, repo_root=None, refined=False,
         warnings.warn('could not import format_behavior_data (%s) -- no events '
                       'will be available.  Set repo_root, or pass events= '
                       'yourself.' % err)
-        return OrderedDict((n, (np.zeros(0, np.int64), np.zeros(0, np.int64)))
-                           for n in EVENT_SPEC)
+        return _empty_events()
 
     data_dir = os.path.join(data_dir, '')      # load_behavior_data f-strings
     seed_struct, count_data = fbd.load_behavior_data(data_dir)
 
+    # --- raw checks and retrievals, with their 0-indexed sites --------------
+    # always needed: expectation status is scored from the raw onsets
+    r_on_raw, r_off_raw, r_site = fbd.get_retrieve_ints(
+        count_data, seed_struct, return_site_idx=True)
     if refined:
-        c_on, c_off, _ = fbd.get_caches_refined(count_data, seed_struct, n_frames)
-        r_on, r_off, _ = fbd.get_retrievals_refined(count_data, seed_struct, n_frames)
-        k_on, k_off, _ = fbd.get_checks_refined(count_data, seed_struct, n_frames)
+        # every zero-change interaction, no duration cut -- the same list, in
+        # the same order, that get_checks_refined's return_keep mask indexes
+        k_on_raw, k_off_raw, k_site = fbd.get_checks_raw(
+            count_data, seed_struct, max_check_dur=np.inf, dt=dt)
+    else:
+        k_on_raw, k_off_raw, k_site = fbd.get_checks_raw(
+            count_data, seed_struct, max_check_dur=max_check_dur, dt=dt)
+
+    # --- expectation status: one seed ledger for both event types -----------
+    try:
+        timeline = fbd._seed_provenance_timeline(
+            count_data, seed_struct, use_init_counts=use_init_counts,
+            removal_rule=removal_rule)
+        # get_expectation_status ignores use_init_counts / removal_rule when
+        # handed a timeline, so the timeline above is built with the same ones
+        status_kw = dict(timeline=timeline, use_init_counts=use_init_counts,
+                         removal_rule=removal_rule,
+                         discovered_bait=discovered_bait)
+        k_status, _ = fbd.get_expectation_status(
+            count_data, seed_struct, k_on_raw, k_site, **status_kw)
+        r_status, _ = fbd.get_expectation_status(
+            count_data, seed_struct, r_on_raw, r_site, **status_kw)
+        SITE_EMPTY, SITE_BAITED, SITE_CACHED = (
+            fbd.SITE_EMPTY, fbd.SITE_BAITED, fbd.SITE_CACHED)
+    except AttributeError as err:
+        warnings.warn('format_behavior_data has no expectation-status code '
+                      '(%s) -- update your lhy_hpc checkout.  All checks and '
+                      'retrievals will be drawn as unscored.' % err)
+        k_status = np.full(np.size(k_on_raw), -1)
+        r_status = np.full(np.size(r_on_raw), -1)
+        SITE_EMPTY, SITE_BAITED, SITE_CACHED = 0, 1, 2
+
+    # --- event bounds to draw ------------------------------------------------
+    if refined:
+        c_on, c_off, _ = fbd.get_caches_refined(count_data, seed_struct,
+                                                n_frames, dt=dt)
+        # same events, same order as get_retrieve_ints, just padded
+        r_on, r_off, _ = fbd.get_retrievals_refined(count_data, seed_struct,
+                                                    n_frames, dt=dt)
+        k_on, k_off, _, k_keep = fbd.get_checks_refined(
+            count_data, seed_struct, n_frames, dt=dt, return_keep=True)
+        k_status = k_status[k_keep]
     else:
         c_on, c_off = fbd.get_cache_ints(count_data, seed_struct)
-        r_on, r_off = fbd.get_retrieve_ints(count_data, seed_struct)
-        k_on, k_off, _ = fbd.get_checks_raw(count_data, seed_struct)
+        r_on, r_off = r_on_raw, r_off_raw
+        k_on, k_off = k_on_raw, k_off_raw
     e_on, e_off = fbd.get_eating_bouts(count_data)
     f_on, f_off, _ = fbd.get_feeder_ints(count_data, use_beak=use_beak)
 
+    r_on, r_off, k_on, k_off = (np.asarray(a).ravel()
+                                for a in (r_on, r_off, k_on, k_off))
+    for what, on, status in (('retrievals', r_on, r_status),
+                             ('checks', k_on, k_status)):
+        if on.size != np.size(status):       # should never happen
+            raise RuntimeError('%d %s but %d status labels -- event lists are '
+                               'out of step' % (on.size, what, np.size(status)))
+
+    # --- split by status, BEFORE _clean_event re-sorts anything -------------
+    k_occupied = np.isin(k_status, (SITE_BAITED, SITE_CACHED))
+    k_empty = (k_status == SITE_EMPTY)
+    r_baited = (r_status == SITE_BAITED)
+    r_cached = (r_status == SITE_CACHED)
+
+    split = OrderedDict([
+        ('feeder',            (f_on, f_off)),
+        ('eat',               (e_on, e_off)),
+        ('cache',             (c_on, c_off)),
+        ('retrieve_cached',   (r_on[r_cached], r_off[r_cached])),
+        ('retrieve_baited',   (r_on[r_baited], r_off[r_baited])),
+        ('check_empty',       (k_on[k_empty], k_off[k_empty])),
+        ('check_occupied',    (k_on[k_occupied], k_off[k_occupied])),
+        ('retrieve_unscored', (r_on[~(r_baited | r_cached)],
+                               r_off[~(r_baited | r_cached)])),
+        ('check_unscored',    (k_on[~(k_occupied | k_empty)],
+                               k_off[~(k_occupied | k_empty)])),
+    ])
+
+    n_r_unscored = int(np.sum(~(r_baited | r_cached)))
+    if n_r_unscored:
+        n_r_empty = int(np.sum(r_status == SITE_EMPTY))
+        warnings.warn(
+            '%d retrieval(s) could not be scored baited/cached (%d at a site '
+            'the seed ledger had as empty%s) -- drawn as unscored.'
+            % (n_r_unscored, n_r_empty,
+               "; discovered_bait='drop' removes found baits"
+               if discovered_bait == 'drop' else ''))
+
     out = OrderedDict()
-    for name, (on, off) in zip(
-            ('cache', 'retrieve', 'check', 'eat', 'feeder'),
-            ((c_on, c_off), (r_on, r_off), (k_on, k_off),
-             (e_on, e_off), (f_on, f_off))):
+    for name in EVENT_SPEC:
+        on, off = split[name]
         out[name] = _clean_event(on, off, n_frames)
     return out
 
@@ -550,10 +687,12 @@ class SpikeVideoGUI(QtWidgets.QMainWindow):
         bottom_layout.setSpacing(2)
 
         # colored-text legend, indented to sit over the ethogram's plot area
+        # optional entries (the unscored catch-alls) only when there are any
         self.legend = QtWidgets.QLabel('&nbsp;&nbsp;&nbsp;&nbsp;'.join(
             "<span style='color:%s'>%s</span>"
             % (_css_color(spec['color']), spec['label'])
-            for spec in EVENT_SPEC.values()))
+            for name, spec in EVENT_SPEC.items()
+            if not spec.get('optional') or self.events[name][0].size))
         self.legend.setAlignment(_qt('AlignCenter'))
         self.legend.setStyleSheet('font-weight: bold; font-size: 11pt;')
         bottom_layout.addWidget(self.legend)
@@ -862,20 +1001,21 @@ class SpikeVideoGUI(QtWidgets.QMainWindow):
 
     def jump_to_event(self, name, forward=True):
         onsets = self.events[name][0]
+        label = EVENT_SPEC[name]['label']
         if onsets.size == 0:
-            self.status.setText("no '%s' events loaded" % name)
+            self.status.setText("no '%s' events loaded" % label)
             return
         if self.playing:
             self.toggle_play()
         if forward:
             i = np.searchsorted(onsets, self.frame + 1, side='left')
             if i >= onsets.size:
-                self.status.setText('last %s reached' % name)
+                self.status.setText('last %s reached' % label)
                 return
         else:
             i = np.searchsorted(onsets, self.frame, side='left') - 1
             if i < 0:
-                self.status.setText('first %s reached' % name)
+                self.status.setText('first %s reached' % label)
                 return
         self.set_frame(int(onsets[i]))
 
@@ -952,7 +1092,8 @@ class SpikeVideoGUI(QtWidgets.QMainWindow):
             self.set_speed(self.speed * 1.5)
         elif low == 'q':
             self.close()
-        elif low in [s['key'] for s in EVENT_SPEC.values()]:
+        elif low and low in [s['key'] for s in EVENT_SPEC.values()
+                             if s['key']]:
             name = next(n for n, s in EVENT_SPEC.items() if s['key'] == low)
             self.jump_to_event(name, forward=not shift)
         else:
@@ -998,6 +1139,10 @@ def launch(vid_dir, data_dir, cam_id,
            baseline_units='minutes',
            use_repo_moving_avg=True,
            refined_events=False,
+           max_check_dur=1.5,
+           use_init_counts=True,
+           removal_rule='cached_first',
+           discovered_bait='cached',
            display_mode='raster',
            playback_speed=1.0,
            video_downsample=1,
@@ -1026,7 +1171,16 @@ def launch(vid_dir, data_dir, cam_id,
 
     if events is None:
         events = load_events(data_dir, n_frames, repo_root=repo_root,
-                             refined=refined_events)
+                             refined=refined_events, dt=1.0 / fps,
+                             max_check_dur=max_check_dur,
+                             use_init_counts=use_init_counts,
+                             removal_rule=removal_rule,
+                             discovered_bait=discovered_bait)
+    else:
+        unknown = [k for k in events if k not in EVENT_SPEC]
+        if unknown:
+            warnings.warn('events= keys %s are not drawn -- use the EVENT_SPEC '
+                          'names: %s' % (unknown, ', '.join(EVENT_SPEC)))
     events = OrderedDict(
         (name, _clean_event(events.get(name, (np.zeros(0), np.zeros(0)))[0],
                             events.get(name, (np.zeros(0), np.zeros(0)))[1],

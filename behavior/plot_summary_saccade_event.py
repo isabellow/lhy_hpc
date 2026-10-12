@@ -81,8 +81,12 @@ norm_method = 'pop_normalize'  # 'pop_normalize' (SD from baseline) | None (Hz)
 pop_norm_kw = dict(std_reg=1e-2, baseline_window=30)
 
 ''' Sorting '''
-sort_panel = 'saccade'         # 'saccade' | 'event': whose peak time sets the order
+sort_panel = 'event'         # 'saccade' | 'event': whose peak time sets the order
 cv_sort = True                 # sort on odd events, plot even events
+group_by_cluster = True       # True: blocks of GMM cluster ('wf_cluster' from
+                               # build_data_dict.cluster_cells), peak order within
+                               # each. Clusters 0, 1, ... first, then the negative
+                               # codes (-1 first), then cells with no label
 
 ''' Plotting params '''
 clim = (-1, 1)                 # None = auto
@@ -91,7 +95,18 @@ title_size = 13
 axis_label = 11
 tick_label = 9
 
-CACHE_VERSION = 1              # bump when compute_session's output changes
+# group_by_cluster: a colored bar beside the y axis for each cluster, between the tick labels and the axis label
+show_cluster_bars = True
+cluster_bar_lw = 2
+cluster_bar_gap = 0.004            # axes fraction trimmed from each end of a bar
+cluster_bar_pad = 3                # points between tick labels, bars and axis label
+# cluster colors, as in plot_feature_grid (CLUSTER_COLORS / CODE_STYLE)
+CLUSTER_COLORS = ['xkcd:saffron', 'xkcd:cobalt blue', 'xkcd:grass green', 'xkcd:scarlet',
+                  'xkcd:purple', 'xkcd:teal', 'xkcd:magenta', 'xkcd:mustard', 'xkcd:sky blue']
+CODE_COLORS = {-1: 'xkcd:light gray', -2: 'xkcd:saffron', -3: 'xkcd:dark gray',
+               -5: 'k', -6: 'xkcd:light brown'}
+
+CACHE_VERSION = 2              # bump when compute_session's output changes
 
 WIN = {k: window_frames(*w, dt) for k, w in windows.items()}   # (start, end, t_pts)
 XLABEL = {'saccade': 'time from saccade peak (s)',
@@ -173,10 +188,78 @@ def compute_session(data_dict, bird, session_id):
         sort, plot = average(chrono[0::2]), average(chrono[1::2])
     else:
         sort = plot = average(chrono)
-    return dict(bird=bird, plot=plot, sort=sort, lags=(align - sacc) * dt)
+    return dict(bird=bird, session=str(session_id), row_idx=np.flatnonzero(keep_cells),
+                n_cells_raw=n_cells_raw, cluster_id=np.asarray(cell_ids).astype(int),
+                plot=plot, sort=sort, lags=(align - sacc) * dt)
 
 
-def plot_heatmap(psth, rows, median_lag, title, save_path):
+def get_wf_cluster(data_dict, s):
+    '''
+    GMM cluster label of each kept cell of session s (nan where missing).
+    Read from the data dict, not the cache, so re-clustering needs no recompute.
+    'wf_cluster' is indexed by the rows of aligned_spikes.npy, before filtering.
+    '''
+    out = np.full(s['row_idx'].shape[0], np.nan)
+    sd = data_dict[s['bird']][s['session']]
+    lab, ids = sd.get('wf_cluster'), sd.get('cluster_ids')
+    if lab is None:
+        return out
+    lab = np.asarray(lab).astype(int)
+    if lab.shape[0] != s['n_cells_raw'] or (
+            ids is not None and not np.array_equal(np.asarray(ids).astype(int)[s['row_idx']],
+                                                   s['cluster_id'])):
+        print(f"  WARNING: {s['bird']}_{s['session']}: wf_cluster does not match the rows "
+              'of aligned_spikes (re-run build_data_dict?); no cluster labels')
+        return out
+    return lab[s['row_idx']].astype(float)
+
+
+def cluster_rank(lab):
+    '''Block order: clusters 0, 1, ..., then codes -1, -2, ..., then no label.'''
+    return np.where(np.isnan(lab), np.inf, np.where(lab >= 0, lab, 1e6 - lab))
+
+
+def cluster_color(label):
+    '''Color of a wf_cluster label as in plot_feature_grid; None if not a cluster code.'''
+    try:
+        k = int(float(label))
+    except (TypeError, ValueError):
+        return None                                   # 'unlabeled', 'none', nan
+    return CLUSTER_COLORS[k % len(CLUSTER_COLORS)] if k >= 0 else CODE_COLORS.get(k, 'xkcd:light gray')
+
+
+def draw_cluster_bars(ax, spans):
+    '''
+    One colored vertical bar per cluster block, between the y tick labels and
+    the y axis label (which is moved left to make room).  spans: (label,
+    first row, end row) per block, top to bottom.  Call once the figure layout
+    is final (just before savefig), since it measures the tick labels.
+    '''
+    f = ax.figure
+    f.canvas.draw()
+    renderer = f.canvas.get_renderer()
+    pt = f.dpi / 72                                   # pixels per point
+    boxes = [t.get_window_extent(renderer) for t in ax.get_yticklabels()
+             if t.get_visible() and t.get_text()]
+    x_px = (min(b.x0 for b in boxes) if boxes else
+            ax.transAxes.transform((0, 0))[0] - plt.rcParams['ytick.major.size'] * pt)
+    to_axes = ax.transAxes.inverted()
+    x_bar = to_axes.transform((x_px - (cluster_bar_pad + cluster_bar_lw / 2) * pt, 0))[0]
+    x_lab = to_axes.transform((x_px - (2 * cluster_bar_pad + cluster_bar_lw) * pt, 0))[0]
+    y0, y1 = ax.get_ylim()
+    frac = lambda y: (y - y0) / (y1 - y0)            # data -> axes fraction
+    for label, b0, b1 in spans:
+        color = cluster_color(label)
+        if color is None:
+            continue
+        lo, hi = sorted((frac(b0 - 0.5), frac(b1 - 0.5)))
+        trim = min(cluster_bar_gap, 0.25 * (hi - lo))  # tiny blocks keep a visible bar
+        ax.plot([x_bar, x_bar], [lo + trim, hi - trim], transform=ax.transAxes,
+                color=color, lw=cluster_bar_lw, solid_capstyle='butt', clip_on=False)
+    ax.yaxis.set_label_coords(x_lab, 0.5)
+
+
+def plot_heatmap(psth, rows, median_lag, title, save_path, blocks=None):
     cmap = plt.get_cmap('bwr' if norm_method else 'viridis')
     vmin, vmax = clim if clim is not None else (None, None)
     f, ax = plt.subplots(1, 2, figsize=(panel_size[0] * 2, panel_size[1]),
@@ -190,9 +273,16 @@ def plot_heatmap(psth, rows, median_lag, title, save_path):
             a.axvline(lag_line, color='k', ls=':', lw=0.8)
         a.set_xlabel(XLABEL[k], fontsize=axis_label)
         a.tick_params(labelsize=tick_label)
+        for _, b0, _ in (blocks or [])[1:]:
+            a.axhline(b0 - 0.5, color='k', lw=0.6)
     ax[1].set_yticks([])
-    ax[0].set_ylabel(f'cells (sorted by {sort_panel} peak'
-                     f'{", cross-validated" if cv_sort else ""})', fontsize=axis_label)
+    if blocks:
+        # one tick per cluster block, labelled with its cluster number / code
+        ax[0].set_yticks([(b0 + b1 - 1) / 2 for _, b0, b1 in blocks])
+        ax[0].set_yticklabels([name for name, _, _ in blocks])
+    ax[0].set_ylabel(f'cells ({"by GMM cluster, then " if blocks else "sorted by "}'
+                     f'{sort_panel} peak{", cross-validated" if cv_sort else ""})',
+                     fontsize=axis_label)
 
     pos = ax[-1].get_position()
     cax = f.add_axes([pos.x1 + 0.02, pos.y0 + pos.height * 0.35, 0.015, pos.height * 0.3])
@@ -201,6 +291,8 @@ def plot_heatmap(psth, rows, median_lag, title, save_path):
     cb.ax.tick_params(labelsize=tick_label)
 
     f.suptitle(title, fontsize=title_size, y=0.98)
+    if blocks and show_cluster_bars:
+        draw_cluster_bars(ax[0], blocks)
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     f.savefig(save_path, dpi=400, bbox_inches='tight')
     plt.close(f)
@@ -250,6 +342,10 @@ def main(recompute=False):
     if not sessions:
         print('no sessions with usable events')
         return
+    if group_by_cluster:
+        data_dict = np.load(data_file, allow_pickle=True).item()
+        for s in sessions:
+            s['wf_cluster'] = get_wf_cluster(data_dict, s)
 
     figures = []
     if 'bird' in plot_levels:
@@ -270,14 +366,27 @@ def main(recompute=False):
         if valid.shape[0] == 0:
             print(f'{name}: no cells with >= {min_events} usable events')
             continue
-        rows = valid[np.argsort(np.argmax(sort[valid], axis=1), kind='stable')]
+        peak = np.argmax(sort[valid], axis=1)
+        blocks = None
+        if group_by_cluster:
+            lab = np.concatenate([s['wf_cluster'] for s in group])[valid]
+            order = np.lexsort((peak, cluster_rank(lab)))   # cluster, then peak
+            rows, lab = valid[order], lab[order]
+            # (name, first row, end row) of each cluster block
+            edges = np.flatnonzero(np.diff(cluster_rank(lab)) != 0) + 1
+            starts, ends = np.r_[0, edges], np.r_[edges, lab.shape[0]]
+            blocks = [('none' if np.isnan(lab[b0]) else f'{int(lab[b0])}', b0, b1)
+                      for b0, b1 in zip(starts, ends)]
+        else:
+            rows = valid[np.argsort(peak, kind='stable')]
         median_lag = float(np.median(np.concatenate([s['lags'] for s in group])))
 
         title = f'{name}, {event_key}s{group_txt}: {rows.shape[0]} cells'
         fname = (f"{name.replace(' ', '_')}_saccade_{event_key}_{align_event}_"
-                 f"sort-{sort_panel}{'-cv' if cv_sort else ''}.png")
+                 f"sort-{'wfcluster-' if group_by_cluster else ''}"
+                 f"{sort_panel}{'-cv' if cv_sort else ''}.png")
         plot_heatmap(plot, rows, median_lag, title,
-                     f'{folder}saccade_{event_key}_summary/{fname}')
+                     f'{folder}saccade_{event_key}_summary/{fname}', blocks=blocks)
 
 
 if __name__ == '__main__':

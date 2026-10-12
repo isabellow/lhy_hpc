@@ -166,12 +166,18 @@ peak_sort = dict(
 )
 
 # user-defined cluster labels, either
+#   - 'wf_cluster': the GMM labels saved by build_data_dict.cluster_cells
+#     (read fresh from the data dict every run, so re-clustering needs no
+#     recompute).  Clusters 0, 1, ... first, then the negative codes
+#     (waveform_analysis.WF_CLUSTER_CODES), -1 first
 #   - a path to a csv with columns bird, session, cluster_id, label, or
 #   - a flat array, one label per cell in cell_table.csv order (every cell
 #     that passes CELL_FILTERS, before any missing-event exclusion)
+# e.g. sort_by = 'labels', cell_labels = 'wf_cluster', label_secondary_sort = 'peak'
+# sorts by peak (peak_sort) within each GMM cluster
 cell_labels = None
 label_order = None                 # None = sorted, or a list giving block order
-label_secondary_sort = 'depth'     # 'depth' | 'rastermap' | 'peak' | 'response' | None
+label_secondary_sort = 'peak'      # 'depth' | 'rastermap' | 'peak' | 'response' | None
 
 # 'response' sort: cond minus (optional) other cond, window relative to alignment
 response_sort = dict(cond='ret_cached', minus='ret_baited', window=(0.0, 0.5))
@@ -215,6 +221,18 @@ title_size = 13
 axis_label = 11
 tick_label = 9
 block_label_size = 7
+
+# sort_by='labels' with cell_labels='wf_cluster': a colored bar beside the y axis
+# for each cluster, between the tick labels and the axis label
+show_cluster_bars = True
+cluster_bar_lw = 2
+cluster_bar_gap = 0.004            # axes fraction trimmed from each end of a bar
+cluster_bar_pad = 3                # points between tick labels, bars and axis label
+# cluster colors, as in plot_feature_grid (CLUSTER_COLORS / CODE_STYLE)
+CLUSTER_COLORS = ['xkcd:saffron', 'xkcd:cobalt blue', 'xkcd:grass green', 'xkcd:scarlet',
+                  'xkcd:purple', 'xkcd:teal', 'xkcd:magenta', 'xkcd:mustard', 'xkcd:sky blue']
+CODE_COLORS = {-1: 'xkcd:light gray', -2: 'xkcd:saffron', -3: 'xkcd:dark gray',
+               -5: 'k', -6: 'xkcd:light brown'}
 
 # titles in the same colours as the single-cell figures
 cond_colors = {'check_occ': 'xkcd:deep green', 'check_empty': 'xkcd:apple green',
@@ -597,6 +615,30 @@ def get_rastermap_rank(bird, session_id, n_cells_raw, row_idx):
     return rank[row_idx]
 
 
+def get_wf_cluster(data_dict, s):
+    '''
+    GMM cluster label ('wf_cluster', build_data_dict.cluster_cells) of each
+    kept cell of session s; None where the session has no labels.  'wf_cluster'
+    is indexed by the rows of aligned_spikes.npy, before filtering, like cell_pos.
+    '''
+    row_idx = s['row_idx']
+    out = np.full(row_idx.shape[0], None, dtype=object)
+    session_data = data_dict[s['bird']][s['session']]
+    lab = session_data.get('wf_cluster')
+    if lab is None:
+        return out
+    lab = np.asarray(lab).astype(int)
+    ids = session_data.get('cluster_ids')
+    if lab.shape[0] != s['n_cells_raw'] or (
+            ids is not None and not np.array_equal(np.asarray(ids).astype(int)[row_idx],
+                                                   np.asarray(s['cluster_id']).astype(int))):
+        print(f"  WARNING: {s['bird']}_{s['session']}: wf_cluster does not match the rows "
+              'of aligned_spikes (re-run build_data_dict?); no cluster labels')
+        return out
+    out[:] = [int(v) for v in lab[row_idx]]
+    return out
+
+
 def uses_method(method):
     return sort_by == method or (sort_by == 'labels' and label_secondary_sort == method)
 
@@ -647,6 +689,7 @@ def pool_sessions(sessions, data_dict):
                               avg_fr=s['avg_fr'], sess_idx=s_idx))
         t['rm_rank'] = (get_rastermap_rank(s['bird'], s['session'], s['n_cells_raw'],
                                            s['row_idx']) if need_rm else np.nan)
+        t['wf_cluster'] = get_wf_cluster(data_dict, s)
         for c in CONDS:
             t[f'n_ev_{c}'] = s['n_events'][c]
             t[f'n_used_{c}'] = s['n_used'][c]
@@ -668,12 +711,18 @@ def pool_sessions(sessions, data_dict):
     return cells, psth, psth_sort
 
 
+def _wf_labels():
+    return isinstance(cell_labels, str) and cell_labels == 'wf_cluster'
+
+
 def assign_labels(cells):
     cells = cells.copy()
     if cell_labels is None:
         cells['label'] = None
         return cells
-    if isinstance(cell_labels, str):
+    if _wf_labels():
+        cells['label'] = cells['wf_cluster']
+    elif isinstance(cell_labels, str):
         lab = pd.read_csv(cell_labels)
         lab['session'] = lab['session'].astype(str)
         lab['cluster_id'] = lab['cluster_id'].astype(int)
@@ -788,13 +837,18 @@ def order_within(sub, method, ctx, align):
 
 
 def _label_key(x):
-    '''Numeric labels in numeric order, then strings, "unlabeled" last.'''
+    '''
+    Non-negative numbers in numeric order, then negative numbers -1, -2, ...
+    (wf_cluster's codes for cells without a cluster), then strings,
+    "unlabeled" last.
+    '''
     if x == 'unlabeled':
-        return (2, 0, '')
+        return (3, 0, '')
     try:
-        return (0, float(x), '')
+        v = float(x)
     except (TypeError, ValueError):
-        return (1, 0, str(x))
+        return (2, 0, str(x))
+    return (0, v, '') if v >= 0 else (1, -v, '')
 
 
 # blocks each within-block sort needs: depth ranks are only comparable within
@@ -927,6 +981,46 @@ def _draw_blocks(ax, blocks, draw_labels):
                         va='center', fontsize=block_label_size, annotation_clip=False)
 
 
+def cluster_color(label):
+    '''Color of a wf_cluster label as in plot_feature_grid; None if not a cluster code.'''
+    try:
+        k = int(float(label))
+    except (TypeError, ValueError):
+        return None                                   # 'unlabeled', 'none', nan
+    return CLUSTER_COLORS[k % len(CLUSTER_COLORS)] if k >= 0 else CODE_COLORS.get(k, 'xkcd:light gray')
+
+
+def draw_cluster_bars(ax, spans):
+    '''
+    One colored vertical bar per cluster block, between the y tick labels and
+    the y axis label (which is moved left to make room).  spans: (label,
+    first row, end row) per block, top to bottom.  Call once the figure layout
+    is final (just before savefig), since it measures the tick labels.
+    '''
+    f = ax.figure
+    f.canvas.draw()
+    renderer = f.canvas.get_renderer()
+    pt = f.dpi / 72                                   # pixels per point
+    boxes = [t.get_window_extent(renderer) for t in ax.get_yticklabels()
+             if t.get_visible() and t.get_text()]
+    x_px = (min(b.x0 for b in boxes) if boxes else
+            ax.transAxes.transform((0, 0))[0] - plt.rcParams['ytick.major.size'] * pt)
+    to_axes = ax.transAxes.inverted()
+    x_bar = to_axes.transform((x_px - (cluster_bar_pad + cluster_bar_lw / 2) * pt, 0))[0]
+    x_lab = to_axes.transform((x_px - (2 * cluster_bar_pad + cluster_bar_lw) * pt, 0))[0]
+    y0, y1 = ax.get_ylim()
+    frac = lambda y: (y - y0) / (y1 - y0)            # data -> axes fraction
+    for label, b0, b1 in spans:
+        color = cluster_color(label)
+        if color is None:
+            continue
+        lo, hi = sorted((frac(b0 - 0.5), frac(b1 - 0.5)))
+        trim = min(cluster_bar_gap, 0.25 * (hi - lo))  # tiny blocks keep a visible bar
+        ax.plot([x_bar, x_bar], [lo + trim, hi - trim], transform=ax.transAxes,
+                color=color, lw=cluster_bar_lw, solid_capstyle='butt', clip_on=False)
+    ax.yaxis.set_label_coords(x_lab, 0.5)
+
+
 def _clim(psth, rows):
     if clim is not None:
         return tuple(clim)
@@ -997,6 +1091,11 @@ def plot_summary(psth, rows, blocks, align, mode, title, save_path):
 
     if show_suptitle:
         f.suptitle(title, fontsize=title_size, y=0.97)
+    if show_cluster_bars and sort_by == 'labels' and _wf_labels():
+        for r, row in enumerate(LAYOUT):
+            outer = blocks[row[0]]['outer']
+            if outer is not None and rows[row[0]].shape[0]:
+                draw_cluster_bars(ax[r, 0], [(outer[a], a, b) for a, b in _runs(list(outer))])
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     f.savefig(save_path, dpi=400, bbox_inches='tight')
     plt.close(f)
@@ -1063,7 +1162,9 @@ def write_legend_file(path, title, align, mode, cells, sessions, rows, blocks):
              f'Cells: {_filter_text()}.')
     L.append('')
     sort_txt = (_method_text(sort_by) if sort_by != 'labels' else
-                'grouped by user label' + (f', then {_method_text(label_secondary_sort)}'
+                ('grouped by GMM waveform cluster (wf_cluster; negative = no cluster, '
+                 'see WF_CLUSTER_CODES)' if _wf_labels() else 'grouped by user label')
+                + (f', then {_method_text(label_secondary_sort)}'
                                            if label_secondary_sort else ''))
     if sort_by not in ('labels', 'depth', 'rastermap') and block_by:
         sort_txt = f'grouped by {block_by}, then ' + sort_txt
@@ -1198,7 +1299,7 @@ def iter_figures(cells, sessions):
 
 
 def _sort_tag():
-    tag = sort_by
+    tag = 'wfcluster' if sort_by == 'labels' and _wf_labels() else sort_by
     if sort_by == 'labels' and label_secondary_sort:
         tag += f'-{label_secondary_sort}'
     if uses_method('peak'):

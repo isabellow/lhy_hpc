@@ -36,8 +36,13 @@ in two bounded passes and never in full:
   Pass 1 (once per session, ~40 s of data, shared by ALL units)
       A pool of short chunks evenly spaced through the recording is read once
       with all channels, and every unit's waveform snippets are cut out of the
-      same chunks. Sampling the whole session this way also averages over drift
-      instead of characterising a unit from one moment in time.
+      same chunks, at most n_wf / n_chunks per chunk so they span the session.
+      Sampling the whole session this way also averages over drift instead of
+      characterising a unit from one moment in time. Units the pool barely
+      samples (low or bursty rates) get a few extra chunks centred on their own
+      spikes. Snippets are then re-aligned to the unit's own mean, as in
+      getSpikeWaveformV2.m, so symmetric units whose Kilosort spike times land
+      on different extrema don't average out.
 
   Pass 2 (per unit, one 4 s window)
       The example trace. Each unit needs a window where it was actually firing,
@@ -54,6 +59,10 @@ Assumptions / caveats
 * Spike sample indices must index into the recording you load. If you sorted a
   stitched / stim-blanked / cropped recording, pass that SpikeInterface binary
   with --si-folder rather than the raw Intan folder.
+* Channels excluded from sorting are dropped on load, using Kilosort's
+  channel_map.npy (original channel index of each sorted channel), so they are
+  never picked as a peak channel and don't enter the common median reference.
+  max_channel_index is therefore an index into the sorted channels.
 """
 
 from __future__ import annotations
@@ -75,6 +84,8 @@ import spikeinterface.preprocessing as spre
 
 PRE_MS = 0.5      # ms before the spike time   (matches getSessionWaveforms.m)
 TOTAL_MS = 2.0    # ms total waveform duration
+MAX_LAG_MS = 0.4  # max re-alignment shift   (as getSpikeWaveformV2.m)
+MIN_ALIGN = 50    # units with fewer snippets are not re-aligned
 
 
 # --------------------------------------------------------------------------- #
@@ -105,8 +116,15 @@ def get_traces_uv(rec, start_frame, end_frame, channel_ids=None):
 
 
 def load_recording(intan_folder=None, si_folder=None, stream_id="0",
-                   freq_min=300.0, freq_max=6000.0, cmr=True, channel_ids=None):
-    """Return (raw, filtered) recordings. Lazy -- nothing is read here."""
+                   freq_min=300.0, freq_max=6000.0, cmr=True, channel_ids=None,
+                   channel_map=None, n_channels_dat=None):
+    """Return (raw, filtered) recordings. Lazy -- nothing is read here.
+
+    channel_map / n_channels_dat (from the Kilosort folder): if the loaded
+    recording is the full file Kilosort read (n_channels_dat channels), only
+    the sorted channels are kept, in Kilosort's order. A recording that already
+    has just the sorted channels is used as is.
+    """
     if si_folder is not None:
         rec = si.load(str(si_folder))
     elif intan_folder is not None:
@@ -115,17 +133,27 @@ def load_recording(intan_folder=None, si_folder=None, stream_id="0",
         raise ValueError("Provide either intan_folder or si_folder.")
     if channel_ids is not None:
         rec = rec.select_channels(list(channel_ids))
+    elif channel_map is not None:
+        n = rec.get_num_channels()
+        if n == n_channels_dat and n != channel_map.size:
+            rec = rec.select_channels(list(rec.channel_ids[channel_map]))
+        elif n != channel_map.size:
+            raise ValueError(
+                f"The loaded recording has {n} channels, but Kilosort sorted "
+                f"{channel_map.size} of {n_channels_dat}: it is probably not the "
+                "recording that was sorted -- see the caveats in the docstring.")
     rec_filt = spre.bandpass_filter(rec, freq_min=freq_min, freq_max=freq_max)
     if cmr:
         rec_filt = spre.common_reference(rec_filt, reference="global", operator="median")
     return rec, rec_filt
 
 
-def read_params_fs(ks_dir):
+def read_param(ks_dir, key):
+    """Numeric value of `key` in Kilosort's params.py, or None."""
     p = Path(ks_dir) / "params.py"
     if not p.exists():
         return None
-    m = re.search(r"sample_rate\s*=\s*([0-9.eE+-]+)", p.read_text())
+    m = re.search(rf"{key}\s*=\s*([0-9.eE+-]+)", p.read_text())
     return float(m.group(1)) if m else None
 
 
@@ -180,7 +208,8 @@ def best_channels_from_templates(ks_dir, cluster_ids, spike_templates, n_channel
     """Peak channel per cluster from Kilosort's templates -- no raw reads.
 
     Returns {cluster_id: 0-based channel index into the loaded recording}, or
-    None if the template files aren't usable.
+    None if the template files aren't usable. The recording must hold just the
+    sorted channels, in Kilosort's order (see load_recording).
     """
     ks_dir = Path(ks_dir)
     tpath = ks_dir / "templates.npy"
@@ -189,14 +218,10 @@ def best_channels_from_templates(ks_dir, cluster_ids, spike_templates, n_channel
     templates = np.load(tpath)                      # (n_templates, n_samp, n_chan)
     peak = np.argmax(templates.max(1) - templates.min(1), axis=1)
 
-    cmap_path = ks_dir / "channel_map.npy"
-    cmap = (np.load(cmap_path).astype(int).ravel() if cmap_path.exists()
-            else np.arange(templates.shape[2]))
-    if cmap.size != n_channels:
+    if templates.shape[2] != n_channels:
         warnings.warn(
-            f"channel_map.npy has {cmap.size} channels but the loaded recording "
-            f"has {n_channels}. The sorted recording is probably not the one "
-            "loaded -- falling back to peak channels from the raw data.")
+            f"templates.npy has {templates.shape[2]} channels but the loaded recording "
+            f"has {n_channels} -- falling back to peak channels from the raw data.")
         return None
 
     out = {}
@@ -205,7 +230,7 @@ def best_channels_from_templates(ks_dir, cluster_ids, spike_templates, n_channel
         if t is None or t.size == 0:
             return None
         modal = int(np.bincount(t).argmax())        # merged clusters: commonest template
-        out[cid] = int(cmap[peak[modal]])
+        out[cid] = int(peak[modal])
     return out
 
 
@@ -213,13 +238,17 @@ def best_channels_from_templates(ks_dir, cluster_ids, spike_templates, n_channel
 # Pass 1: one chunk pool, shared by every unit
 # --------------------------------------------------------------------------- #
 def collect_waveforms(rec_filt, spikes, best_ch, pre_samp, n_samp,
-                      n_chunks=40, chunk_sec=1.0, n_wf=300, verbose=True):
+                      n_chunks=40, chunk_sec=1.0, n_wf=300, starts=None, verbose=True):
     """Cut waveform snippets for every unit out of a shared pool of chunks.
 
     Chunks are evenly spaced across the recording; each is read once with all
     channels and then served to every unit. Per unit this accumulates
     single-channel snippets on its peak channel plus a running all-channel mean
     (cheap, and gives the multi-channel footprint for free).
+
+    starts : chunk start samples; default n_chunks evenly spaced. Each unit
+        takes at most n_wf / n_chunks snippets per chunk, evenly spaced within
+        it, so its snippets span the session instead of filling up early.
     """
     fs = rec_filt.get_sampling_frequency()
     n_total = rec_filt.get_num_samples()
@@ -227,8 +256,11 @@ def collect_waveforms(rec_filt, spikes, best_ch, pre_samp, n_samp,
     chunk_n = int(round(chunk_sec * fs))
     post = n_samp - pre_samp
 
-    starts = np.unique(np.linspace(0, max(n_total - chunk_n, 0),
-                                   n_chunks).astype(np.int64))
+    if starts is None:
+        starts = np.linspace(0, max(n_total - chunk_n, 0), n_chunks)
+    starts = np.unique(np.clip(np.asarray(starts), 0, max(n_total - chunk_n, 0))
+                       .astype(np.int64))
+    per_chunk = int(np.ceil(n_wf / len(starts)))
     cids = list(spikes)
     snips = {c: [] for c in cids}
     acc = {c: np.zeros((n_samp, n_chan)) for c in cids}
@@ -245,7 +277,10 @@ def collect_waveforms(rec_filt, spikes, best_ch, pre_samp, n_samp,
             lo = np.searchsorted(spk, s0 + pre_samp)
             hi = np.searchsorted(spk, s1 - post)
             ch = best_ch[c]
-            for s in spk[lo:hi]:
+            sel = spk[lo:hi]
+            if sel.size > per_chunk:
+                sel = sel[np.linspace(0, sel.size - 1, per_chunk).astype(int)]
+            for s in sel:
                 k = int(s - s0 - pre_samp)
                 snip = traces[k:k + n_samp]
                 acc[c] += snip
@@ -322,17 +357,30 @@ def read_trace_window(rec_filt, channel_index, candidates, win_sec,
     return first
 
 
-def harvest_extra_waveforms(traces, spk, s0, channel_index, pre_samp, n_samp,
-                            n_needed):
-    """Extra snippets from a window already in memory -- no extra reads."""
-    post = n_samp - pre_samp
-    s1 = s0 + traces.shape[0]
-    lo = np.searchsorted(spk, s0 + pre_samp)
-    hi = np.searchsorted(spk, s1 - post)
-    out = [traces[int(s - s0 - pre_samp):int(s - s0 - pre_samp) + n_samp,
-                  channel_index].copy()
-           for s in spk[lo:hi][:n_needed]]
-    return np.asarray(out) if out else np.zeros((0, n_samp))
+def align_snippets(snips, max_lag, n_iter=2, min_spikes=MIN_ALIGN):
+    """Re-align snippets to their own mean, as getSpikeWaveformV2.m does.
+
+    Each snippet is shifted by the lag (within +/- max_lag samples) maximising
+    its dot product with the current (demeaned) mean, n_iter times; lags are
+    re-centred on their median so the mean stays on the majority's spike time.
+
+    snips : (n, n_samp + 2 * max_lag), cut with max_lag samples of margin
+        each side. Units with fewer than min_spikes snippets are not shifted.
+    Returns (n, n_samp) aligned snippets.
+    """
+    n, L = snips.shape
+    idx = np.arange(L - 2 * max_lag)
+    rows = np.arange(n)[:, None]
+    lags = np.zeros(n, dtype=int)
+    if n >= min_spikes:
+        lag_range = np.arange(-max_lag, max_lag + 1)
+        segs = snips[rows[:, :, None], max_lag + lag_range[None, :, None] + idx]  # (n, n_lag, n_samp)
+        segs = segs - segs.mean(axis=2, keepdims=True)
+        for _ in range(n_iter):
+            tmpl = snips[rows, max_lag + lags[:, None] + idx].mean(axis=0)
+            lags = lag_range[np.argmax(segs @ (tmpl - tmpl.mean()), axis=1)]
+            lags = np.clip(lags - int(round(np.median(lags))), -max_lag, max_lag)
+    return snips[rows, max_lag + lags[:, None] + idx]
 
 
 def waveform_baseline(wf, wf_t, before_ms=-0.5):
@@ -487,15 +535,20 @@ def run_session(intan_folder=None, si_folder=None, ks_dir=None, out_dir=None,
     Returns {cluster_id: data dict}.
     """
     t0 = time.time()
+    # channels Kilosort sorted (original index of each), to drop excluded ones
+    cmap_path = Path(ks_dir) / "channel_map.npy"
+    channel_map = (np.load(cmap_path).astype(int).ravel() if cmap_path.exists() else None)
+    n_dat = read_param(ks_dir, "n_channels_dat")
     rec, rec_filt = load_recording(intan_folder=intan_folder, si_folder=si_folder,
                                    stream_id=stream_id, freq_min=freq_min,
                                    freq_max=freq_max, cmr=cmr,
-                                   channel_ids=channel_ids)
+                                   channel_ids=channel_ids, channel_map=channel_map,
+                                   n_channels_dat=None if n_dat is None else int(n_dat))
     fs = rec.get_sampling_frequency()
     n_total = rec.get_num_samples()
     n_chan = rec.get_num_channels()
 
-    ks_fs = read_params_fs(ks_dir)
+    ks_fs = read_param(ks_dir, "sample_rate")
     if ks_fs is not None and not np.isclose(ks_fs, fs, rtol=1e-4):
         warnings.warn(f"params.py sample rate ({ks_fs}) != recording ({fs}).")
 
@@ -546,9 +599,27 @@ def run_session(intan_folder=None, si_folder=None, ks_dir=None, out_dir=None,
     if verbose:
         print(f"{len(cids)} units | pass 1: {n_chunks} x {chunk_sec:g} s chunks "
               f"({n_chunks * chunk_sec:.0f} s of data, shared)", flush=True)
-    pool = collect_waveforms(rec_filt, spikes, best_ch, pre_samp, n_samp,
+    # snippets are cut with `pad` samples of margin each side, for re-alignment
+    pad = int(round(MAX_LAG_MS * 1e-3 * fs))
+    pool = collect_waveforms(rec_filt, spikes, best_ch, pre_samp + pad, n_samp + 2 * pad,
                              n_chunks=n_chunks, chunk_sec=chunk_sec, n_wf=n_wf,
                              verbose=verbose)
+
+    # units the shared chunks barely sample (low / bursty rates): up to min_wf
+    # extra chunks, on a non-overlapping grid, among those holding their own
+    # spikes; kept if they yield more snippets
+    rng = np.random.default_rng(0)
+    chunk_n = int(round(chunk_sec * fs))
+    for c in cids:
+        if pool[c]["waveforms"].shape[0] >= min_wf:
+            continue
+        bins = np.unique(spikes[c] // chunk_n)
+        starts = rng.choice(bins, size=min(min_wf, bins.size), replace=False) * chunk_n
+        extra = collect_waveforms(rec_filt, {c: spikes[c]}, best_ch, pre_samp + pad,
+                                  n_samp + 2 * pad, chunk_sec=chunk_sec, n_wf=n_wf,
+                                  starts=starts, verbose=False)[c]
+        if extra["waveforms"].shape[0] > pool[c]["waveforms"].shape[0]:
+            pool[c] = extra
 
     # ---- pass 2: per-unit trace window ----
     if out_dir is not None:
@@ -565,12 +636,7 @@ def run_session(intan_folder=None, si_folder=None, ks_dir=None, out_dir=None,
         s0, trace, window = read_trace_window(rec_filt, ch, cands, win_sec,
                                               artifact_uv=artifact_uv)
 
-        wfs = pool[c]["waveforms"]
-        if wfs.shape[0] < min_wf:      # rare low-rate unit: top up for free
-            extra = harvest_extra_waveforms(window, spk, s0, ch, pre_samp, n_samp,
-                                            min_wf - wfs.shape[0])
-            if extra.size:
-                wfs = np.vstack([wfs, extra])
+        wfs = align_snippets(pool[c]["waveforms"], pad)
         if wfs.shape[0] == 0:
             warnings.warn(f"cluster {c}: no usable waveform snippets; skipping")
             continue
@@ -590,7 +656,8 @@ def run_session(intan_folder=None, si_folder=None, ks_dir=None, out_dir=None,
             trace_start_s=s0 / fs, trace_spike_t=(in_win - s0) / fs,
             waveforms=wfs, mean_waveform=mean_wf,
             waveform_t=wf_t,
-            mean_waveform_all_channels=pool[c]["mean_all_channels"],
+            mean_waveform_all_channels=(None if pool[c]["mean_all_channels"] is None
+                                        else pool[c]["mean_all_channels"][pad:pad + n_samp]),
             peak_to_peak_uv=float(np.ptp(mean_wf)),
             **{k: v for k, v in saved.items() if k != "color"},
         )
@@ -645,7 +712,8 @@ def main():
                    help="include mua/unsorted, not just 'good'")
     p.add_argument("--stream-id", default="0")
     p.add_argument("--channel-ids", nargs="+", default=None,
-                   help="subset of channel ids to load (must match what was sorted)")
+                   help="subset of channel ids to load (must match what was sorted); "
+                        "overrides the automatic selection from channel_map.npy")
     p.add_argument("--n-chunks", type=int, default=40,
                    help="chunks in the shared pool (default 40)")
     p.add_argument("--chunk-sec", type=float, default=1.0)

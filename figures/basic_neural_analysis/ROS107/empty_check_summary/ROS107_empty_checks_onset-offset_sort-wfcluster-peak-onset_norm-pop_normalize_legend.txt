@@ -1,0 +1,21 @@
+LH ROS107, empty checks
+
+Each row is one cell and each column a time bin (20 ms) relative to check onset (-1 to 1 s) and offset (-1 to 1 s); dashed line at 0. Empty checks: site interactions with no seed change lasting <= 1.5 s, at a site the seed ledger scores as empty.
+Activity: each cell's instantaneous firing rate over the whole session was divided by its session SD (+0.01) and a running-average baseline (window 30) was subtracted (pop_normalize), so units are SDs from baseline; this trace was averaged across checks and Gaussian-smoothed (sigma 20 ms). Colour limits -1 to 1 SD (red above, blue below baseline).
+Per cell, checks were excluded where the unit's amplitude in a 1-min window around the check was below 0.7x its session average.
+A cell is drawn only with >= 3 usable checks. Cells: all good units, session firing rate > 0.1 Hz.
+
+Sorting: grouped by GMM waveform cluster (wf_cluster; negative = no cluster, see WF_CLUSTER_CODES), then ordered by the time of each cell's peak (the whole window, onset-aligned), earliest on top.
+Cross-validated: each session's checks were split in half (alternating checks in time); half 0 set the order and the heatmap shows only half 1.
+Blocks, top to bottom (rows):
+  0: rows 1-140
+  1: rows 141-320
+  2: rows 321-386
+  3: rows 387-454
+  -1: rows 455-546
+  -5: rows 547-549
+  -6: rows 550-551
+
+551 cells, 7 sessions, 1 bird.
+Checks: 4012 checks, 3989 of them empty; 0 too close to the session edge; 1993 in the plotted half, median 388 per cell after the drift cut.
+Median check duration 0.24 s.
