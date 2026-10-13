@@ -74,7 +74,7 @@ from pathlib import Path
 AWS_EXE       = r"C:\Program Files\Amazon\AWSCLIV2\aws.exe"
 S3_BUCKET     = "isabel-lhy-hpc"
 DATA_ROOT     = Path(r"Z:\Isabel\data")
-HDD_ROOT      = Path(r"E:\isabel-lhy-hpc")    # create this folder on the drive once
+HDD_ROOT      = Path(r"F:\isabel-lhy-hpc")    # create this folder on the drive once
 LOG_DIR       = Path(r"C:\Users\arono\Documents\data_backup_logs")
 EXTENSIONS    = {".avi", ".dat", ".rhd", ".xml"}
 STORAGE_CLASS = "DEEP_ARCHIVE"
